@@ -1,0 +1,40 @@
+// The two types this package exports, from the outside.
+//
+// **`Element` and `Host` are what a consumer annotates against**, and a type nobody can name from
+// another file is a type that does nothing. slate could not build a declaration on an imported type
+// until 0.0.9, so `type Rendered = { el: Element }` below is as much a check of the language as of
+// this package -- and it is the reason the floor moved.
+
+import { createElement, stringHost, mount, html, Element, Host } from "../lath.slx"
+
+// A declaration BUILT on an imported type, which is the shape a consumer's own vocabulary takes.
+type Rendered = { el: Element, where: Host }
+
+@test
+AN_ELEMENT_IS_AN_Element_AND_A_HOST_IS_A_Host()
+    val el = createElement("p", { class: "x" }, ["hi"])
+    val host = stringHost()
+
+    assert(el is Element)
+    assert(host is Host)
+    assert({ el: el, where: host } is Rendered)
+
+    // A component's props are an object and its answer is an element, which is the one signature
+    // every program written against this repeats.
+    box(props: object) -> Element = createElement("div", {}, [props.title])
+
+    assertEq(html(mount(box({ title: "hi" }))), "<div>hi</div>")
+
+@test
+WHAT_IS_NOT_ONE_IS_REFUSED_BY_THE_SAME_TEST()
+    // The error path, which is what says the tests above are asking anything at all.
+    assert(!("p" is Element))
+    assert(!({ type: "p" } is Element))
+    assert(!({} is Host))
+
+    // **A host missing ONE of the eight is not a Host**, which is the check `domHost` carries as a
+    // result annotation -- an adapter with one implementation is a guess, and this one needed two
+    // more functions than it shipped with.
+    val short = stringHost() with { mounted: null }
+
+    assert(!(short is Host))

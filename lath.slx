@@ -18,11 +18,26 @@
 // What `<>...</>` is an element of. A string no tag can be, so it never collides with a host name.
 export val Fragment = "#fragment"
 
+// What an element IS, so that a component can say what it answers.
+//
+// **`type` is deliberately `any`**: a host element's is the tag as text, a component's is the
+// function itself, and a fragment's is `Fragment`. **`key` is `any` and not `string`** because it is
+// whatever a program wrote and is `null` where nothing did — what a key needs is to compare equal to
+// itself, which every slate value does.
+export type Element = { type: any, props: object, key: any }
+
+// The eight functions a host answers, and nothing above them knows what a node is.
+//
+// **A program writing its own host annotates it with this** — `myHost() -> Host` — which is the one
+// check there is that an adapter is whole. It shipped with six of these and needed eight: an adapter
+// with one implementation is a guess, and the two that were missing are `drop` and `mounted`.
+export type Host = { element: function, text: function, setProps: function, setKids: function, setText: function, serialise: function, drop: function, mounted: function }
+
 // What every element in the source is desugared into.
 //
 // **The children go into `props.children`**, which is React's arrangement and is what lets a
 // component pass on what it was given without knowing it is doing so.
-export createElement(type, props, kids) =
+export createElement(type, props: object, kids: array) -> Element =
     { type: type, props: props with { children: kids }, key: props.key ?? null }
 
 // -- the render in progress ------------------------------------------------------------------
@@ -47,7 +62,7 @@ var slot = 0
 // **The setter takes a value or a function of the old one**, and does nothing at all where the new
 // value equals the old -- so a component that sets its state to what it already holds does not
 // re-render, which is what stops an effect from looping.
-export useState(initial) =
+export useState(initial) -> array =
     val cell = hookCell({ value: initial })
     val inst = rendering
 
@@ -59,13 +74,13 @@ export useState(initial) =
             invalidate(inst)]
 
 // State changed by an action rather than by a value, which is `useState` with the reducer in front.
-export useReducer(reduce, initial) =
+export useReducer(reduce: function, initial) -> array =
     val [state, set] = useState(initial)
 
     [state, action -> set(s -> reduce(s, action))]
 
 // A box the component keeps, whose `current` may be written without re-rendering anything.
-export useRef(initial) = hookCell({ current: initial })
+export useRef(initial) -> object = hookCell({ current: initial })
 
 // A value worked out only when what it depends on changes.
 //
@@ -74,7 +89,7 @@ export useRef(initial) = hookCell({ current: initial })
 // rebuilt with the same fields does not count as a change here and does in React. That is a
 // deliberate divergence: it is the host language's own answer, it is the one a slate reader will
 // predict, and the surprising direction -- recomputing when nothing changed -- is the one it removes.
-export useMemo(make, deps) =
+export useMemo(make: function, deps) =
     val cell = hookCell({ value: null, deps: null, first: true })
 
     if cell.first || cell.deps != deps
@@ -85,14 +100,14 @@ export useMemo(make, deps) =
     cell.value
 
 // A function kept between renders, which is `useMemo` of the function itself.
-export useCallback(f, deps) = useMemo(() -> f, deps)
+export useCallback(f: function, deps) = useMemo(() -> f, deps)
 
 // Work to do after the render has been committed, and how to undo it.
 //
 // **The cleanup runs before the next effect and again when the component goes**, which is what makes
 // an effect that subscribes to something safe to write. Leaving `deps` out runs it after every
 // render, which is React's rule read the same way.
-export useEffect(run, deps = null) =
+export useEffect(run: function, deps = null) =
     val cell = hookCell({ deps: null, cleanup: null, first: true })
 
     if cell.first || deps == null || cell.deps != deps
@@ -102,7 +117,7 @@ export useEffect(run, deps = null) =
         push(rendering.root.effects, { cell: cell, run: run })
 
 // The slot this hook call owns, made on the first render and found again on every one after.
-hookCell(fresh) =
+hookCell(fresh: object) -> object =
     val inst = rendering
     val i = slot
 
@@ -118,14 +133,14 @@ hookCell(fresh) =
 // description made fresh every time; the instance holds the hooks, the host node and the children it
 // was matched against, which is the whole reason a component's state does not go when its props
 // change.
-instance(root, parent, el, kind) =
+instance(root: object, parent, el, kind: string) -> object =
     { root: root, parent: parent, el: el, kind: kind, key: null, hooks: [], kids: [], node: null, gone: false }
 
 // What a child amounts to: nothing, a string, or an element.
 //
 // **`null`, `undefined` and the two booleans render nothing**, which is what makes `{cond && <a/>}`
 // the ordinary way to write a conditional child.
-flatten(kids, out) =
+flatten(kids: array, out: array) -> array =
     for kid in kids
         if kid == null || kid == undefined || kid == true || kid == false
             continue
@@ -137,7 +152,7 @@ flatten(kids, out) =
 
     out
 
-kindOf(el) =
+kindOf(el) -> string =
     if el is string || el is number then "text"
     elif el.type == Fragment then "fragment"
     elif el.type is function then "component"
@@ -147,7 +162,7 @@ kindOf(el) =
 //
 // **The key is asked first and the type second**, which is the whole of what a key is for: two
 // elements of the same type in the same position are the same thing unless their keys say otherwise.
-matches(old, el) =
+matches(old, el) -> boolean =
     if old == null then return false
     if old.kind != kindOf(el) then return false
 
@@ -159,7 +174,7 @@ matches(old, el) =
 // -- reconciling -----------------------------------------------------------------------------
 
 // One child, matched against what stood there before.
-reconcile(root, parent, old, el) =
+reconcile(root: object, parent, old, el) -> object =
     if !matches(old, el)
         if old != null then unmount(old)
 
@@ -171,7 +186,7 @@ reconcile(root, parent, old, el) =
 
     old
 
-build(root, parent, el) =
+build(root: object, parent, el) -> object =
     val kind = kindOf(el)
     val inst = instance(root, parent, el, kind)
 
@@ -188,7 +203,7 @@ build(root, parent, el) =
 
     inst
 
-update(inst) =
+update(inst: object) =
     if inst.kind == "text"
         inst.root.host.setText(inst.node, string(inst.el))
 
@@ -219,7 +234,7 @@ update(inst) =
 //
 // **A key is looked for among the old children before position is**, so a row inserted at the top of
 // a list moves the rows below it rather than rewriting every one of them.
-reconcileKids(inst, kids) =
+reconcileKids(inst: object, kids: array) =
     val wanted = flatten(kids, [])
     val old = inst.kids
     var used = []
@@ -240,7 +255,7 @@ reconcileKids(inst, kids) =
     null
 
 // The old child this element should update, by key where it has one and by position otherwise.
-takeMatch(old, used, el, i) =
+takeMatch(old: array, used: array, el, i: integer) =
     val key = if el is string || el is number then null else el.key ?? null
 
     if key != null
@@ -259,7 +274,7 @@ takeMatch(old, used, el, i) =
 
     null
 
-contains(xs, v) =
+contains(xs: array, v) -> boolean =
     for x in xs
         if x == v then return true
 
@@ -269,7 +284,7 @@ contains(xs, v) =
 //
 // **A component and a fragment have no node of their own**, so they answer with their children's --
 // which is what lets a component return several things without a tag around them.
-nodesOf(inst) =
+nodesOf(inst: object) -> array =
     if inst.kind == "text" || inst.kind == "host" then return [inst.node]
 
     childNodes(inst)
@@ -279,7 +294,7 @@ nodesOf(inst) =
 // **Not `nodesOf` of the instance itself, which for a host node is that node.** Setting a host node's
 // children to its own node makes the tree hold itself, and what comes back is a recursion 10,000
 // deep in the serialiser rather than anything that names the mistake.
-childNodes(inst) =
+childNodes(inst: object) -> array =
     var out = []
 
     for kid in inst.kids
@@ -289,7 +304,7 @@ childNodes(inst) =
     out
 
 // A subtree that is no longer rendered: every effect it left behind is undone, deepest first.
-unmount(inst) =
+unmount(inst: object) =
     inst.gone = true
 
     for kid in inst.kids
@@ -310,7 +325,7 @@ unmount(inst) =
 // -- roots -----------------------------------------------------------------------------------
 
 // An element rendered, and kept so that it can be rendered again.
-export mount(el, host = null) =
+export mount(el, host = null) -> object =
     val root = { host: host ?? stringHost(), inst: null, pending: [], effects: [], scheduled: false }
 
     root.inst = reconcile(root, null, null, el)
@@ -320,14 +335,14 @@ export mount(el, host = null) =
     root
 
 // The rendered tree as text, which is what the string host is for.
-export html(root) = root.host.serialise(nodesOf(root.inst))
+export html(root: object) -> string = root.host.serialise(nodesOf(root.inst))
 
 
 // Every state change since the last one, rendered.
 //
 // **A change does not render on the spot.** Two `setState` calls in one handler are one render, which
 // is React's batching and is what stops a handler from being able to see a half-updated tree.
-export flush(root) =
+export flush(root: object) =
     loop
         if root.pending.len() == 0 then break
 
@@ -346,7 +361,7 @@ export flush(root) =
     null
 
 // The effects the render queued, run outermost first, each after its own cleanup.
-commit(root) =
+commit(root: object) =
     // **The host is handed the top of the tree on every commit, not only the first.** A host node's
     // children are set by the reconciler, but the nodes at the very TOP have no host node above them
     // -- so when a component at the root renders a different set, nothing would have told the host.
@@ -366,7 +381,7 @@ commit(root) =
     null
 
 // A component re-rendered underneath a host node, so that node's children have changed.
-refreshNodes(inst) =
+refreshNodes(inst: object) =
     for kid in inst.kids
         refreshNodes(kid)
 
@@ -375,7 +390,7 @@ refreshNodes(inst) =
     null
 
 // A component whose state changed, wanting to be rendered again.
-invalidate(inst) =
+invalidate(inst: object) =
     if inst.gone then return null
 
     val root = inst.root
@@ -394,7 +409,7 @@ invalidate(inst) =
 
     null
 
-scheduled(root) =
+scheduled(root: object) =
     root.scheduled = false
 
     flush(root)
@@ -403,11 +418,11 @@ scheduled(root) =
 
 // **Six functions, and nothing above them knows what a node is.** A DOM host answers the same six
 // over real elements, which is what makes the components on both sides one set of components.
-export stringHost() =
+export stringHost() -> Host =
     { element: hostElement, text: hostText, setProps: hostSetProps, setKids: hostSetKids,
       setText: hostSetText, serialise: serialiseNodes, drop: hostDrop, mounted: hostMounted }
 
-hostElement(tag) = { tag: tag, props: {}, kids: [] }
+hostElement(tag: string) -> object = { tag: tag, props: {}, kids: [] }
 
 // A string host's node is an ordinary object and the collector takes it; there is nothing to give
 // back. The function exists so that the adapter is one shape rather than two.
@@ -416,20 +431,20 @@ hostDrop(node) = null
 // **Nothing, and that is the interesting one.** A string host has nowhere to put the tree -- the
 // tree IS the answer, and `html` walks it afresh whenever it is asked. A DOM host has built real
 // elements that are not in the page until something appends them, which is what this is for.
-hostMounted(nodes) = null
+hostMounted(nodes: array) = null
 
-hostText(s) = { text: s }
+hostText(s: string) -> object = { text: s }
 
-hostSetProps(node, props) =
+hostSetProps(node: object, props: object) =
     node.props = props
 
-hostSetKids(node, kids) =
+hostSetKids(node: object, kids: array) =
     node.kids = kids
 
-hostSetText(node, s) =
+hostSetText(node: object, s: string) =
     node.text = s
 
-serialiseNodes(nodes) =
+serialiseNodes(nodes: array) -> string =
     var out = ""
 
     for node in nodes
@@ -437,7 +452,7 @@ serialiseNodes(nodes) =
 
     out
 
-serialiseNode(node) =
+serialiseNode(node: object) -> string =
     if node.tag == undefined then return escapeText(node.text)
 
     var out = "<" + node.tag + attributes(node.props) + ">"
@@ -452,7 +467,7 @@ serialiseNode(node) =
 // **`children`, `key` and every handler are left out of the markup**, the first two being the
 // framework's own and a handler having nowhere to go in text. A `true` is a bare attribute and a
 // `false`, `null` or `undefined` is no attribute at all, which is HTML's own rule.
-attributes(props) =
+attributes(props: object) -> string =
     var out = ""
 
     for [name, value] in entries(props)
@@ -467,14 +482,14 @@ attributes(props) =
 
     out
 
-isHandler(name) =
+isHandler(name: string) -> boolean =
     name.len() > 2 && name[0..<2] == "on" && name[2] == name[2].upper()
 
-isVoid(tag) =
+isVoid(tag: string) -> boolean =
     ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"].indexOf(tag) != null
 
 // **Text is escaped, and that is not a nicety.** A renderer that puts what it was given straight into
 // the markup hands whoever supplied the text control of the page.
-escapeText(s) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+escapeText(s: string) -> string = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-escapeAttr(s) = escapeText(s).replace("\"", "&quot;")
+escapeAttr(s: string) -> string = escapeText(s).replace("\"", "&quot;")

@@ -157,8 +157,27 @@ diff would move a handful. It is correct and it is not fast.
 
 ## Requirements
 
-slate **0.0.3** or newer. `lath/dom` is a subpath import, and a package exposing more than its `main`
-is what that release added.
+slate **0.0.9** or newer, as of lath 0.2.0. `lath/dom` is a subpath import and a package exposing
+more than its `main` is what 0.0.3 added, which was the floor until now; 0.0.9 is what the two
+exported types need — a `type` declaration could not name one imported from another file before it,
+so `type Rendered = { el: Element }` in your own code would not have compiled.
+
+## The two types, and what they are for
+
+```
+import { createElement, stringHost, Element, Host } from lath
+
+// A component's props are an object and its answer is an element.
+box(props: object) -> Element = <div class="box">{props.title}</div>
+
+// A host of your own, checked against the contract.
+myHost() -> Host = stringHost() with { serialise: countingSerialise }
+```
+
+**`Host` is the eight functions an adapter answers**, and annotating one with it is the only check
+there is that it is whole — this package shipped an adapter with six and needed eight, and neither
+missing function was guessable from the first implementation. `domHost` carries `-> Host` for
+exactly that reason.
 
 ## Licence
 

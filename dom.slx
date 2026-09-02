@@ -11,6 +11,7 @@
 
 import { createElement, createText, setAttribute, removeAttribute, setProperty, on, off,
     setChildren, setText, byId, query, markup, release } from slate:dom
+import { Host } from "./lath.slx"
 
 // A host over one element of the page.
 //
@@ -21,7 +22,11 @@ import { createElement, createText, setAttribute, removeAttribute, setProperty, 
 // **The six functions are built HERE rather than at the top level**, because two of them have to
 // remember things: what was last set on a node, so that a re-render can take back the attribute it
 // no longer has and the handler it replaced. A top-level function would have nowhere to keep that.
-export domHost(into) =
+// **`-> Host` is the second implementation checked against the contract**, which is the whole reason
+// that type is exported. An adapter with one implementation is a guess -- this one shipped with six
+// functions and needed eight -- so the one place a missing function can be caught cheaply is here,
+// where the object is built.
+export domHost(into: string) -> Host =
     val el = if into[0..<1] == "#" then byId(into[1..]) else query(into)
 
     if el == null
@@ -33,14 +38,14 @@ export domHost(into) =
     val attrs = {}
     val hands = {}
 
-    element(tag) = createElement(tag)
+    element(tag: string) = createElement(tag)
 
-    text(s) = createText(s)
+    text(s: string) = createText(s)
 
     // **A re-render sets what is there now and takes back what is not**, which is the half a host
     // that only ever set things would get wrong: a `disabled` that goes away has to be removed, and
     // a handler replaced by a new closure has to be detached or the old one fires too.
-    setProps(node, props) =
+    setProps(node: integer, props: object) =
         val key = string(node)
         val had = attrs[key] ?? []
         var now = []
@@ -70,19 +75,19 @@ export domHost(into) =
 
         null
 
-    setKids(node, kids) =
+    setKids(node: integer, kids: array) =
         setChildren(node, kids)
 
         null
 
-    setNodeText(node, s) =
+    setNodeText(node: integer, s: string) =
         setText(node, s)
 
         null
 
     // **What the page would show**, which is the same question the string host answers by building
     // the text itself. Asking it of the document is what lets a test compare the two.
-    serialise(nodes) =
+    serialise(nodes: array) -> string =
         var out = ""
 
         for node in nodes
@@ -92,7 +97,7 @@ export domHost(into) =
 
     // A node the framework has dropped. Giving the handle back is what stops the table growing as
     // long as everything the interface has ever rendered.
-    drop(node) =
+    drop(node: integer) =
         val key = string(node)
 
         // **`null` and not `undefined`**: slate refuses `undefined` in an object, which is the same
@@ -108,7 +113,7 @@ export domHost(into) =
     // **`mounted` is what puts the tree in the page, and it runs on every commit.** The framework
     // has no idea where a host's nodes are supposed to go -- which is exactly why the same framework
     // renders to a string -- so this is the one function that knows about `el`.
-    mounted(nodes) =
+    mounted(nodes: array) =
         setChildren(el, nodes)
 
         null
@@ -122,7 +127,7 @@ export domHost(into) =
 // **The previous one is detached first**, and that is not tidiness. A component's handler is a fresh
 // closure on every render, so a host that only ever added would leave one listener per render on the
 // node and a single click would run every version of the handler the component had ever had.
-listen(hands, node, name, f) =
+listen(hands: object, node: integer, name: string, f) =
     val key = string(node) + " " + name
     val kind = name[2..].lower()
     val had = hands[key] ?? null
@@ -142,5 +147,5 @@ listen(hands, node, name, f) =
 
     null
 
-isHandler(name) =
+isHandler(name: string) -> boolean =
     name.len() > 2 && name[0..<2] == "on" && name[2] == name[2].upper()
