@@ -416,8 +416,10 @@ scheduled(root: object) =
 
 // -- the string host -------------------------------------------------------------------------
 
-// **Six functions, and nothing above them knows what a node is.** A DOM host answers the same six
-// over real elements, which is what makes the components on both sides one set of components.
+// **Eight functions, and nothing above them knows what a node is.** A DOM host answers the same eight
+// over real elements, which is what makes the components on both sides one set of components. It
+// shipped with six and needed `drop` and `mounted`; the count here said six for two releases after
+// that, which is what a number written in prose does.
 export stringHost() -> Host =
     { element: hostElement, text: hostText, setProps: hostSetProps, setKids: hostSetKids,
       setText: hostSetText, serialise: serialiseNodes, drop: hostDrop, mounted: hostMounted }

@@ -1,0 +1,215 @@
+import { createElement, Fragment, mount, html } from "../lath.slx"
+import { router, matchPath, cleanPath, searchOf, parseSearch, Link, Anything, navigateWith } from "../router.slx"
+
+// The router: one URL in, one view out.
+//
+// **Every test here goes through `router` and `html` rather than through the matcher alone**, which
+// is the seam a person using this package stands on. `matchPath` is exported and a few tests below
+// ask it directly, but only where what is being pinned is the matching itself and rendering would
+// say nothing extra.
+
+// A route table used by most of the tests below: a root, a static page, one with a parameter, one
+// with two, and a last case.
+routes() =
+    [{ path: "/", view: (m) -> <p>home</p> },
+     { path: "/about", view: (m) -> <p>about</p> },
+     { path: "/notes/:id", view: (m) -> <p>note {m.params.id}</p> },
+     { path: "/notes/:id/edit", view: (m) -> <p>edit {m.params.id}</p> },
+     { path: Anything, view: (m) -> <p>no {m.path}</p> }]
+
+at(url: string) -> string = html(mount(router(routes(), url)))
+
+@test
+A_STATIC_TEMPLATE_MATCHES_ITSELF_AND_NOTHING_ELSE()
+    assertEq(at("/"), "<p>home</p>")
+    assertEq(at("/about"), "<p>about</p>")
+
+@test
+A_COLON_SEGMENT_BINDS_AND_THE_VIEW_IS_HANDED_ONE_RECORD()
+    // **`view` takes `{ params, query, path }` and not positional arguments**, so a route view and
+    // an ordinary component read alike -- and so that whatever this grows next arrives without
+    // changing what anybody already wrote.
+    assertEq(at("/notes/42"), "<p>note 42</p>")
+    assertEq(at("/notes/42/edit"), "<p>edit 42</p>")
+
+@test
+A_COLON_SEGMENT_BINDS_ONE_SEGMENT_AND_NEVER_A_SLASH()
+    // **This is what makes two routes with the same prefix behave.** If `:id` swallowed the rest of
+    // the path, `/notes/42/edit` would match `/notes/:id` first and the edit page would be
+    // unreachable -- silently, and only for the routes that share a prefix.
+    assertEq(matchPath("/notes/:id", "/notes/42/edit"), null)
+    assertEq(matchPath("/notes/:id", "/notes"), null)
+    assertEq(matchPath("/notes/:id", "/notes/42").id, "42")
+
+@test
+A_ROUTE_THAT_MATCHES_WITH_NO_PARAMETERS_IS_NOT_A_ROUTE_THAT_DID_NOT_MATCH()
+    // **Which is why the answer is `null` rather than an empty record.** `{}` is perfectly ordinary
+    // for `/about`, so a matcher answering `{}` for both would make the two indistinguishable.
+    assertEq(len(keys(matchPath("/about", "/about"))), 0)
+    assertEq(matchPath("/about", "/elsewhere"), null)
+
+@test
+THE_FIRST_MATCHING_ROUTE_WINS_AND_THE_LAST_CASE_IS_LAST()
+    // The table is read in order, so `"*"` is a last case and not a special form.
+    assertEq(at("/nothing/here"), "<p>no /nothing/here</p>")
+
+@test
+A_PATH_WITH_NOTHING_TO_MATCH_IT_AND_NO_LAST_CASE_IS_A_FAULT()
+    // **A router that quietly rendered nothing would send the reader to look at the view**, and the
+    // mistake is a missing route. The sentence names the path and says what would have caught it.
+    var said = ""
+
+    try
+        html(mount(router([{ path: "/only", view: (m) -> <p>x</p> }], "/other")))
+    catch e
+        said = e.message
+
+    assert(contains(said, "no route matches /other"))
+    assert(contains(said, "\"*\""))
+
+@test
+A_TRAILING_SLASH_IS_NOT_A_DIFFERENT_ROUTE_AND_THE_ROOT_IS_THE_EXCEPTION()
+    // A person typing a URL and a program building one disagree about this constantly and neither is
+    // wrong, so it is settled before anything is compared.
+    assertEq(at("/about/"), "<p>about</p>")
+    assertEq(at("/notes/42/"), "<p>note 42</p>")
+    assertEq(at("/"), "<p>home</p>")
+    assertEq(cleanPath("/"), "/")
+    assertEq(cleanPath(""), "/")
+
+@test
+THE_QUERY_AND_THE_FRAGMENT_ARE_OFF_BEFORE_ANYTHING_IS_MATCHED()
+    // **A route that silently stopped matching the first time somebody added a query parameter** is
+    // the failure this prevents, and it is the kind nobody suspects the router of.
+    assertEq(at("/about?ref=mail"), "<p>about</p>")
+    assertEq(at("/about#section"), "<p>about</p>")
+    assertEq(at("/about?ref=mail#section"), "<p>about</p>")
+    assertEq(cleanPath("/a/b?x=1#y"), "/a/b")
+    assertEq(searchOf("/a/b?x=1#y"), "x=1")
+    assertEq(searchOf("/a/b#y"), "")
+
+@test
+THE_QUERY_REACHES_THE_VIEW_AS_A_RECORD_OF_STRINGS()
+    val one = [{ path: "/s", view: (m) -> <p>{m.query.q ?? "none"}|{m.path}</p> }]
+
+    assertEq(html(mount(router(one, "/s?q=two+words"))), "<p>two words|/s</p>")
+    assertEq(html(mount(router(one, "/s"))), "<p>none|/s</p>")
+
+@test
+A_REPEATED_QUERY_NAME_IS_THE_LAST_ONE_AND_A_BARE_NAME_IS_PRESENT_AND_EMPTY()
+    // `slate:url`'s rules, arriving here because the parsing is its. An array where a name repeats
+    // would make the TYPE of `q.name` depend on what somebody put in a link.
+    val q = parseSearch("a=1&a=2&debug")
+
+    assertEq(q.a, "2")
+    assertEq(has(q, "debug"), true)
+    assertEq(q.debug, "")
+
+@test
+A_PERCENT_ENCODED_SEGMENT_IS_DECODED_AND_OVER_BYTES()
+    // **`%C3%A9` is two bytes that are one character**, so a decoder working a character at a time
+    // could not put them back together. `slate:url` is what does this, and it is the same decoder
+    // `slate:http`'s router uses -- so a path routed on a server and the same path routed in a page
+    // bind the same thing.
+    val bound = matchPath("/who/:name", "/who/caf%C3%A9")
+
+    assertEq(bound.name, "café")
+    assertEq(len(bound.name), 4)
+
+@test
+A_LINK_IS_A_REAL_ANCHOR_AND_CARRIES_THE_MARK()
+    // **A marker rather than a handler on every anchor**, which is what lets a page rendered on a
+    // server and a page rendered in a browser be one program: the markup is the same either way, the
+    // link works with no slate on the page at all, and a middle click is a middle click because what
+    // was rendered is an ordinary `<a href>`.
+    assertEq(html(mount(<Link to="/notes/42">the note</Link>)),
+        "<a href=\"/notes/42\" data-lath-link>the note</a>")
+
+@test
+A_LINK_PASSES_EVERY_OTHER_PROP_THROUGH_AND_KEEPS_to_OUT_OF_THE_MARKUP()
+    // `to` is this component's own argument and would be a made-up attribute in the page; everything
+    // else a person wrote on the anchor is theirs and belongs in the markup.
+    assertEq(html(mount(<Link to="/x" class="quiet" title="go">go</Link>)),
+        "<a class=\"quiet\" title=\"go\" href=\"/x\" data-lath-link>go</a>")
+
+// -- what a Link does with a click ----------------------------------------------------------------
+
+// An event record of the shape `slate:dom` builds, with the two fields a router needs.
+//
+// **`mods` and `button` were added to `slate:dom` for this**, and without them every test below
+// would be the same test: a cmd-click and a plain click were indistinguishable.
+click(button: integer, meta: boolean, ctrl: boolean, shift: boolean, alt: boolean, seen: object) =
+    { type: "click", button: button, mods: { meta: meta, ctrl: ctrl, shift: shift, alt: alt },
+      prevent: () -> stop(seen), stop: () -> null }
+
+stop(seen: object) =
+    seen.prevented = true
+
+    null
+
+// A `Link`'s handler, and a note of what it did.
+//
+// **`navigateWith` is module state, so every test here puts it back.** A page has one address bar
+// and a suite has many tests.
+tried(to: string, e) =
+    val seen = { went: null, prevented: false }
+
+    remember(where) =
+        seen.went = where
+
+        null
+
+    navigateWith(remember)
+
+    val anchor = Link({ to: to, children: [] })
+
+    anchor.props.onClick(e(seen))
+
+    navigateWith(null)
+
+    seen
+
+@test
+A_PLAIN_LEFT_CLICK_ON_A_LINK_IS_THE_ROUTERS()
+    val seen = tried("/notes/7", (s) -> click(0, false, false, false, false, s))
+
+    assertEq(seen.went, "/notes/7")
+    assertEq(seen.prevented, true)
+
+@test
+A_MODIFIED_CLICK_AND_A_MIDDLE_CLICK_ARE_THE_BROWSERS()
+    // **A router that took these would swallow the most ordinary thing anybody does to a link**:
+    // cmd-click opens a tab, shift-click a window, middle-click a tab. Not preventing the default is
+    // the whole of letting the browser have it, the rendered element being a real anchor.
+    for e in [(s) -> click(0, true, false, false, false, s),
+              (s) -> click(0, false, true, false, false, s),
+              (s) -> click(0, false, false, true, false, s),
+              (s) -> click(0, false, false, false, true, s),
+              (s) -> click(1, false, false, false, false, s),
+              (s) -> click(2, false, false, false, false, s)]
+        val seen = tried("/notes/7", e)
+
+        assertEq(seen.went, null)
+        assertEq(seen.prevented, false)
+
+@test
+A_LINK_TO_SOMEWHERE_ELSE_IS_NOT_THIS_PAGES_TO_RENDER()
+    // A router renders paths of its own. `//elsewhere.example` is another origin written the short
+    // way, which is the one that does not look like a URL.
+    for to in ["https://example.com/x", "//elsewhere.example/x", "mailto:someone@example.com"]
+        val seen = tried(to, (s) -> click(0, false, false, false, false, s))
+
+        assertEq(seen.went, null)
+        assertEq(seen.prevented, false)
+
+@test
+WITH_NOTHING_INSTALLED_A_LINK_IS_AN_ORDINARY_ANCHOR()
+    // **Which is what a server-rendered page is**, and what a page whose script has not run yet is.
+    // The handler is there and does nothing, so the browser follows the href.
+    val seen = { went: null, prevented: false }
+    val anchor = Link({ to: "/notes/7", children: [] })
+
+    anchor.props.onClick(click(0, false, false, false, false, seen))
+
+    assertEq(seen.went, null)
+    assertEq(seen.prevented, false)

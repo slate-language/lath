@@ -1,0 +1,230 @@
+// lath/router -- one URL, one view, and an anchor that stays an anchor.
+//
+// **A route is a path template and a function, and there is nothing else to learn.** `"/notes/:id"`
+// matches `/notes/42` and binds `id`; a plain `"/about"` matches itself; `"*"` matches anything and
+// is the last case. There are no regular expression routes, because a template is what people write
+// and a regular expression is what they debug.
+//
+//     val routes = [
+//         { path: "/",          view: (m) -> <Home/> },
+//         { path: "/notes/:id", view: (m) -> <Note id={m.params.id}/> },
+//         { path: "*",          view: (m) -> <Missing at={m.path}/> },
+//     ]
+//
+//     mount(router(routes, req.path))
+//
+// **THIS MODULE IMPORTS NOTHING THAT NEEDS A BROWSER**, which is the whole reason it is a module of
+// its own rather than part of `lath.slx` or of `dom.slx`. A server rendering markup imports it and a
+// page imports the same file; what differs between them is the path handed in, and nothing else.
+//
+// **`slate:url` is the reason that is true of the percent-coder as well.** Those four names were
+// `slate:http`'s until slate 0.0.28 and importing that module into a page cost 239 KB -- a file
+// server and an HTTP/2 speaker, to read a query string. They moved into a module of their own that
+// asks nothing of the host, which is what this one needs.
+//
+// **There are no nested routes.** A nested router is a component that renders a router, which needs
+// nothing here and is what a page with a sidebar already writes.
+
+import { createElement, Element } from "./lath.slx"
+import { percentDecode, parseQuery } from slate:url
+
+// A route: the template a path is matched against, and what to render when it does.
+//
+// **`view` is a function of ONE record**, not of positional parameters, so a route view and an
+// ordinary component read alike -- and so that a query, and whatever this grows next, arrive without
+// changing what anybody already wrote.
+export type Route = { path: string, view: function }
+
+// What a view is handed.
+//
+// `params` are the `:name` segments, `query` is what followed the `?`, and `path` is the cleaned
+// path the match was made against -- no fragment, no query, no trailing slash.
+export type Match = { params: object, query: object, path: string }
+
+// -- reading a URL -------------------------------------------------------------------------------
+
+// The path on its own, in the shape everything below compares against.
+//
+// **The fragment goes first and is never looked at again.** `location().hash` is the browser's
+// business and a server is never sent one, so a router that matched on it would answer differently
+// in the two places it is supposed to answer the same.
+//
+// **A trailing slash is not a different route**, `/` itself excepted, because a person typing a URL
+// and a program building one disagree about it constantly and neither is wrong.
+export cleanPath(url: string) -> string =
+    var s = url
+    val h = indexOf(s, "#")
+
+    if h != null then s = s[0..<h]
+
+    val q = indexOf(s, "?")
+
+    if q != null then s = s[0..<q]
+
+    if s == "" then s = "/"
+    if len(s) > 1 && endsWith(s, "/") then s = s[0..<len(s) - 1]
+
+    s
+
+// What followed the `?`, with the fragment already off. Empty where there was none.
+export searchOf(url: string) -> string =
+    var s = url
+    val h = indexOf(s, "#")
+
+    if h != null then s = s[0..<h]
+
+    val q = indexOf(s, "?")
+
+    // **`indexOf` answers `null` and not `-1`**, which is slate's rule everywhere and is the one
+    // thing a reader arriving from another language writes wrongly here.
+    if q == null then "" else s[q + 1..]
+
+// `a=1&b=two+words` as a record of strings.
+//
+// **`slate:url`'s `parseQuery` under a name that says what it is here**, and its rules come with it:
+// a repeated name is the LAST one, and a name with no `=` is present and empty. The alternative
+// every framework reaches for is an array where a name repeats, which makes the TYPE of `q.name`
+// depend on what somebody put in a link.
+export parseSearch(s: string) -> object = parseQuery(s)
+
+// -- matching ------------------------------------------------------------------------------------
+
+// The `"*"` template, which matches every path there is.
+export val Anything = "*"
+
+// A path template matched against a cleaned path: the bound `:name` segments, or `null`.
+//
+// **Answering `null` rather than an empty record is what lets a route with no parameters be told
+// from one that did not match at all**, `{}` being perfectly ordinary for `"/about"`.
+//
+// **A `:name` binds one segment and never a slash**, so `/notes/:id` does not match `/notes/1/edit`.
+// A template that wants the rest of a path is what `"*"` is for.
+export matchPath(template: string, path: string) -> object =
+    if template == Anything then return {}
+
+    val want = segmentsOf(template)
+    val got = segmentsOf(path)
+
+    if len(want) != len(got) then return null
+
+    var params = {}
+    var i = 0
+
+    while i < len(want)
+        val w = want[i]
+
+        if startsWith(w, ":")
+            // **The segment is decoded and the NAME is not.** A name is what the program wrote in
+            // its own source; a segment is what arrived.
+            params[w[1..]] = percentDecode(got[i], false)
+        elif percentDecode(w, false) != percentDecode(got[i], false)
+            return null
+
+        i = i + 1
+
+    params
+
+// A path cut into its segments, with the empties dropped, so that `/` is no segments and `/a/` and
+// `/a` are both one.
+segmentsOf(path: string) -> array =
+    var out = []
+
+    for part in split(path, "/")
+        if part != "" then push(out, part)
+
+    out
+
+// -- the router ----------------------------------------------------------------------------------
+
+// The first route whose template matches `at`, rendered.
+//
+// **`at` is handed in and never read from the world**, which is the whole of what makes one router
+// answer for a server and a page: `req.path` on one side, the browser's own path on the other, and
+// this file knowing about neither.
+//
+// **Nothing matching is a FAULT and not an empty render**, unless a `"*"` route says what to do. A
+// router that quietly rendered nothing would send the reader to look at the view, and the mistake is
+// a missing route.
+export router(routes: array, at = null) -> Element =
+    val url = at ?? "/"
+    val path = cleanPath(url)
+    val query = parseSearch(searchOf(url))
+
+    for route in routes
+        val params = matchPath(route.path, path)
+
+        if params != null
+            return route.view({ params: params, query: query, path: path })
+
+    throw "no route matches " + path + ", and there is no \"" + Anything + "\" route to fall back on"
+
+// -- links ---------------------------------------------------------------------------------------
+
+// The attribute that says an anchor is this router's to intercept.
+//
+// **A marker rather than a handler on every anchor**, so a page rendered on a server and a page
+// rendered in a browser are one program: the markup is the same either way, the link works with no
+// slate on the page at all, and a middle click is a middle click because it is a real anchor.
+export val LinkMark = "data-lath-link"
+
+// What a `Link` calls instead of letting the browser follow it, or `null` where nothing installed
+// one -- which is every server, and a page that has not asked.
+//
+// **The page hands this in and this module never reaches for it**, which is the whole of what keeps
+// `lath/router` importable by a server: moving the address bar is `pushPath`, `pushPath` is
+// `slate:dom`'s, and `slate:dom` works in one host out of three. `lath/dom`'s `usePath` installs it
+// for a page that wants the ordinary arrangement.
+//
+// **It is module state, so there is one of it per program.** A page with two independent routers
+// wants two, which is a thing to build when somebody has one; a router is a page's address bar and
+// most pages have one address bar.
+var navigate = null
+
+// Tell every `Link` what to do instead of following.
+export navigateWith(f) =
+    navigate = f
+
+    null
+
+// Whether a click is one the router may take, or one the browser must have.
+//
+// **The modifiers and the button are the whole of it, and without them a router swallows the most
+// ordinary thing anybody does to a link**: cmd-click opens a tab, shift-click a window, middle-click
+// a tab, and every one of those is the browser's to do and not a framework's. `slate:dom` grew
+// `mods` and `button` on its event record for exactly this.
+plainClick(e: object) -> boolean =
+    e.button == 0 && !e.mods.meta && !e.mods.ctrl && !e.mods.shift && !e.mods.alt
+
+// Whether a destination is one this page can render, which is a path of its own and not a URL
+// somewhere else. `//elsewhere.example` is another origin written the short way.
+ourOwn(to: string) -> boolean =
+    len(to) > 0 && to[0..<1] == "/" && !startsWith(to, "//")
+
+// An anchor that a router intercepts.
+//
+//     <Link to="/notes/42">the note</Link>
+//
+// **It renders a plain `<a href>`, and that is what makes a page one program.** The markup is the
+// same on a server and in a browser, the link works with no slate on the page at all, and a middle
+// click is a middle click because what was rendered is an ordinary anchor. What is added on top is a
+// handler, which `stringHost` leaves out of markup anyway.
+export Link(props: object) -> Element =
+    val to = props.to
+
+    followed(e)
+        if navigate == null || !plainClick(e) || !ourOwn(to) then return null
+
+        e.prevent()
+
+        navigate(to)
+
+    var out = {}
+
+    for name in keys(props)
+        if name != "to" && name != "children" then out[name] = props[name]
+
+    out["href"] = to
+    out[LinkMark] = true
+    out["onClick"] = followed
+
+    createElement("a", out, props.children ?? [])

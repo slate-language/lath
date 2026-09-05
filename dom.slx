@@ -11,7 +11,9 @@
 
 import { createElement, createText, setAttribute, removeAttribute, setProperty, on, off,
     setChildren, setText, byId, query, markup, release } from slate:dom
-import { Host } from "./lath.slx"
+import { location, pushPath, onNavigate } from slate:dom
+import { Host, useState, useEffect } from "./lath.slx"
+import { navigateWith } from "./router.slx"
 
 // A host over one element of the page.
 //
@@ -149,3 +151,45 @@ listen(hands: object, node: integer, name: string, f) =
 
 isHandler(name: string) -> boolean =
     name.len() > 2 && name[0..<2] == "on" && name[2] == name[2].upper()
+
+// -- the address bar ------------------------------------------------------------------------------
+
+// The path the page is at, as state, so that a component re-renders when the page moves.
+//
+//     val here = usePath()
+//
+//     mount(router(routes, here), domHost("#app"))
+//
+// **THIS IS WHERE `lath/router` MEETS THE BROWSER, AND IT IS THE ONLY PLACE.** The router itself is
+// handed a path and never reads one, which is what lets a server import it; everything that knows
+// about an address bar is here, in the file that already owns the one import working in one host out
+// of three.
+//
+// It does three things, and they are three halves of one arrangement: it holds the current path, it
+// tells `Link` to push rather than follow, and it listens for the back button.
+export usePath() -> string =
+    val here = location()
+    val [path, setPath] = useState(here.path + here.query + here.hash)
+
+    // **`pushPath` does NOT raise `onNavigate`** -- a browser raises `popstate` for a movement the
+    // user made and never for one the program made itself -- so a push has to set the state too, and
+    // the listener below is only ever the back and forward buttons.
+    go(to)
+        pushPath(to)
+        setPath(to)
+
+    moved(where)
+        setPath(where)
+
+    // **Installed once and not on every render**, which is what the empty dependency list says. A
+    // second `navigateWith` would be harmless and a second `onNavigate` would not: `slate:dom` keeps
+    // one handler per registration, so a page re-rendering fifty times would hold fifty of them.
+    wire()
+        navigateWith(go)
+        onNavigate(moved)
+
+        null
+
+    useEffect(wire, [])
+
+    path

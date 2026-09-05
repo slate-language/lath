@@ -1,0 +1,71 @@
+import { serve, close } from slate:http
+import { localPort } from slate:net
+import { createElement, Fragment, mount, html } from "../lath.slx"
+import { router, Link, Anything } from "../router.slx"
+
+// **THE ACCEPTANCE TEST FOR THE ROUTER, AND IT IS A REAL SERVER.**
+//
+// Everything else about the router is checked by handing it a string. This hands it `req.path` from
+// a request that came over a socket, which is the only thing that says the two ends agree: a router
+// whose `at` argument did not mean what a server calls a path would pass every other test in the
+// suite and fail here.
+//
+// **The whole page is one program with a browser's.** The routes, the views and the links below are
+// what a page would import; the difference is that the path arrives from a request here and from the
+// address bar there, and that difference is one argument.
+
+Home(props: object) = <p>home, and <Link to="/notes/7">a note</Link></p>
+
+Note(props: object) = <p>note {props.id}</p>
+
+Missing(props: object) = <p>nothing at {props.at}</p>
+
+pageRoutes() =
+    [{ path: "/", view: (m) -> <Home/> },
+     { path: "/notes/:id", view: (m) -> <Note id={m.params.id}/> },
+     { path: Anything, view: (m) -> <Missing at={m.path}/> }]
+
+@test
+async A_PAGE_IS_RENDERED_ON_A_SERVER_BY_THE_SAME_ROUTER_A_BROWSER_WOULD_USE()
+    // **`stringHost` is what `mount` takes when it is given no host**, so a server render needs no
+    // second spelling: the same `mount(router(...))` a page writes answers markup here.
+    val server = serve(0, req -> html(mount(router(pageRoutes(), req.path))))
+    val base = "http://127.0.0.1:" + string(localPort(server)) + "/"
+
+    got(rest) = fetch(base + rest)
+
+    val home = await got("")
+    val note = await got("notes/7")
+    val gone = await got("nowhere/at/all")
+
+    // **The socket is closed on every path out of this**, a server left listening holding the loop
+    // open for the rest of the run with nothing printed to say why.
+    close(server)
+
+    assertEq(home.value.status, 200)
+    assertEq(home.value.body, "<p>home, and <a href=\"/notes/7\" data-lath-link>a note</a></p>")
+    assertEq(note.value.body, "<p>note 7</p>")
+    assertEq(gone.value.body, "<p>nothing at /nowhere/at/all</p>")
+
+@test
+async A_QUERY_AND_A_TRAILING_SLASH_REACH_THE_SERVER_AND_CHANGE_NOTHING()
+    // **`req.path` carries neither a query nor a fragment** -- `slate:http` splits them off -- but a
+    // page's own path does carry a query, so the router has to cut for itself. Both ends land on the
+    // same route, which is the assertion.
+    // **`req.search` is the raw text after the `?` WITHOUT the `?`**, so a server putting the two
+    // back together has to write it. That is `slate:http`'s shape and not something to work around;
+    // the point here is that the router is handed a URL of the kind a browser would hand it.
+    asUrl(req) = req.path + (if req.search == "" then "" else "?" + req.search)
+
+    val server = serve(0, req -> html(mount(router(pageRoutes(), asUrl(req)))))
+    val base = "http://127.0.0.1:" + string(localPort(server)) + "/"
+
+    val plain = await fetch(base + "notes/7")
+    val slashed = await fetch(base + "notes/7/")
+    val queried = await fetch(base + "notes/7?from=list")
+
+    close(server)
+
+    assertEq(plain.value.body, "<p>note 7</p>")
+    assertEq(slashed.value.body, "<p>note 7</p>")
+    assertEq(queried.value.body, "<p>note 7</p>")

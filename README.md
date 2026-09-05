@@ -52,13 +52,20 @@ the line that is wrong is the one in your own program.
 | `html(root)` | the tree as markup — the string host's answer |
 | `stringHost()` | the default host |
 | `domHost(selector)` | the other one, in `lath/dom` — a real page |
+| `router(routes, at)`, `Link` | one URL, one view, in `lath/router` |
+| `usePath()` | the address bar as state, in `lath/dom` |
 
-## Two modules, and the split is not cosmetic
+## Three modules, and the splits are not cosmetic
 
-`lath` is the framework and `lath/dom` is the browser host, and they are separate because **most
-programs must not have the second one**. `dom.slx` imports `slate:dom`, which works in a browser and
+`lath` is the framework, `lath/dom` is the browser host and `lath/router` is the router.
+
+**Most programs must not have `lath/dom`.** It imports `slate:dom`, which works in a browser and
 faults everywhere else — so a page rendered to markup beside `slate:http`, or a component tested
 under the interpreter, has no business loading it.
+
+**`lath/router` is separate for its own reason: so that a server can import it.** It is handed a path
+and never reads one, so nothing in it needs a browser — which is what lets the same routes and the
+same views render on a server and in a page.
 
 ```
 import { createElement, Fragment, mount, useState } from lath
@@ -70,6 +77,58 @@ mount(<Counter/>, domHost("#app"))
 Then `slate js app.slx -o app.js` and a `<script src="app.js">` beside a `<div id="app">`. The
 emitted file is self-contained — the slate runtime, this framework and the program in one — so there
 is no bundler and nothing to install.
+
+## The router
+
+A route is a path template and a function, and there is nothing else to learn. `"/notes/:id"` matches
+`/notes/42` and binds `id`; `"*"` matches anything and is the last case. There are no regular
+expression routes, because a template is what people write and a regular expression is what they
+debug.
+
+```
+import { createElement, Fragment, mount, html } from lath
+import { router, Link, Anything } from lath/router
+
+Home(props) = <p>home, and <Link to="/notes/7">a note</Link></p>
+Note(props) = <p>note {props.id}</p>
+Missing(props) = <p>nothing at {props.at}</p>
+
+routes = [
+    { path: "/",          view: (m) -> <Home/> },
+    { path: "/notes/:id", view: (m) -> <Note id={m.params.id}/> },
+    { path: Anything,     view: (m) -> <Missing at={m.path}/> },
+]
+
+print(html(mount(router(routes, "/notes/7"))))
+```
+
+**A view is handed one record**, `{ params, query, path }`, so a route view and an ordinary component
+read alike and a query arrives without changing anybody's signature. The query is parsed into strings
+by [`slate:url`](https://github.com/slate-language/slate/blob/dev/docs/library/url.md), whose rules
+come with it: a repeated name is the last one, and a bare `?debug` is present and empty.
+
+**The path is handed in and never read from the world.** That is the whole design: `req.path` on a
+server and `usePath()` in a page, and the router itself knows about neither — which is what lets one
+set of routes render in both places. `tests/server.slx` renders them through `slate:http` and
+`check/routed.slx` renders the same ones into a document.
+
+**Nothing matching is a fault** unless a `"*"` route says otherwise. A router that quietly rendered
+nothing would send the reader to look at the view, and the mistake is a missing route.
+
+**A `Link` is a real `<a href>`** carrying a `data-lath-link` mark, so the markup is the same on a
+server and in a browser, the link works on a page whose script has not run, and a middle click is a
+middle click. In a page, `usePath()` tells every `Link` to push the address instead of following it:
+
+```
+import { domHost, usePath } from lath/dom
+
+App(props) = router(routes, usePath())
+
+mount(<App/>, domHost("#app"))
+```
+
+**No nested routes in this version.** A nested router is a component that renders a router, which
+needs nothing from here.
 
 ## The host is behind an adapter, and there are two of them
 
@@ -104,7 +163,13 @@ inventing a foreign value, so `slate:dom` builds an object at the moment the han
 | `value` | what the target holds now, as a string, or `null` |
 | `checked` | a checkbox's state, or `null` |
 | `key` | for a keyboard event |
+| `mods` | `{ meta, ctrl, shift, alt }` — which modifiers were down |
+| `button` | `0` left, `1` middle, `2` right, or `null` for a non-mouse event |
 | `stop()`, `prevent()` | `stopPropagation` and `preventDefault` |
+
+**`mods` and `button` were added to `slate:dom` for `Link`**, and they are what a link cannot be
+written without: a router that intercepted every click would swallow cmd-click, shift-click and
+middle-click, which is the most ordinary thing anybody does to one.
 
 A counter reads none of it. A form reads `e.value`, which is a *property* and not the attribute — the
 host sets it as one, which is what keeps a re-render from freezing a field somebody is typing in.
@@ -143,10 +208,10 @@ slate test tests
 They are written in slate and run by slate's own runner, which is how anybody using this package
 would run their own.
 
-`check/` is a jsdom driver, run by hand — see its README. It sits outside `tests/` because
-`slate test tests` walks everything below that directory and `check/counter.slx` is a page, which
-needs a document; and it is not part of the suite because jsdom is not a dependency of this repo, and
-adding one would put `npm install` in front of the suite's one command.
+`check/` holds two jsdom drivers, run by hand — see its README. They sit outside `tests/` because
+`slate test tests` walks everything below that directory and both are pages, which need a document;
+and they are not part of the suite because jsdom is not a dependency of this repo, and adding one
+would put `npm install` in front of the suite's one command.
 
 ## Not here yet
 
@@ -157,10 +222,14 @@ diff would move a handful. It is correct and it is not fast.
 
 ## Requirements
 
-slate **0.0.9** or newer, as of lath 0.2.0. `lath/dom` is a subpath import and a package exposing
-more than its `main` is what 0.0.3 added, which was the floor until now; 0.0.9 is what the two
-exported types need — a `type` declaration could not name one imported from another file before it,
-so `type Rendered = { el: Element }` in your own code would not have compiled.
+slate **0.0.28** or newer, as of lath 0.3.0, and the router is what moved it. Two things arrived in
+that release for it: **`slate:url`**, so that the percent-coder a router needs can be imported by a
+page without dragging a whole HTTP server in with it, and **`mods` and `button` on a handler's event
+record**, without which `Link` could not tell a plain click from a cmd-click.
+
+The floor before that was 0.0.9, for the two exported types — a `type` declaration could not name one
+imported from another file before it, so `type Rendered = { el: Element }` in your own code would not
+have compiled. And 0.0.3 before that, for `lath/dom` being a subpath import at all.
 
 ## The two types, and what they are for
 

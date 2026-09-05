@@ -1,0 +1,41 @@
+// The router against a real DOM: a link is clicked, the address bar moves and the view changes.
+//
+// **This is the half `slate test tests` cannot reach.** Everything else the router does is checked
+// there by handing it a string; what cannot be checked without a document is the part deciding
+// whether a click belongs to the router or to the browser, because that reads `mods` and `button`
+// off an event the browser built. `check/README.md` says how to run it.
+//
+// **It is the same routes and the same components a server would render.** `tests/server.slx` mounts
+// them under `stringHost` and asserts the markup; this mounts them under `domHost` and clicks them.
+// The difference is one argument -- where the path comes from -- which is the whole claim the router
+// makes.
+
+import { createElement, Fragment, mount } from "../lath.slx"
+import { router, Link, Anything } from "../router.slx"
+import { domHost, usePath } from "../dom.slx"
+import { location } from slate:dom
+
+// **Written as a `Link` and not as an anchor**, which is the thing under test: what it renders has
+// to be an ordinary `<a href>` and what it installs has to be a handler that reads the event.
+Home(props: object) = <p id="view">home, and <Link to="/notes/7" id="toNote">a note</Link></p>
+
+Note(props: object) = <p id="view">note {props.id}, and <Link to="/" id="toHome">home</Link></p>
+
+Away(props: object) = <p id="view">away, and <Link to="https://example.com/x" id="toAway">off site</Link></p>
+
+Missing(props: object) = <p id="view">nothing at {props.at}</p>
+
+pageRoutes() =
+    [{ path: "/", view: (m) -> <Home/> },
+     { path: "/notes/:id", view: (m) -> <Note id={m.params.id}/> },
+     { path: "/away", view: (m) -> <Away/> },
+     { path: Anything, view: (m) -> <Missing at={m.path}/> }]
+
+// **The whole of what a page writes.** `usePath` holds the address as state and tells every `Link`
+// to push rather than follow; the router is a function of that path and knows nothing else.
+App(props: object) = router(pageRoutes(), usePath())
+
+val root = mount(<App/>, domHost("#app"))
+
+print("at " + location().path)
+print("ready")

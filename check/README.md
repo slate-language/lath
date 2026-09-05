@@ -13,7 +13,21 @@ ever checked against is a contract with one implementation** — so this is wher
     slate js check/counter.slx -o check/counter.js
     node check/drive.mjs check/counter.js
 
-It prints `ok` and nothing else when the host is right, and names what it wanted otherwise.
+    slate js check/routed.slx -o check/routed.js
+    node check/routed.mjs check/routed.js
+
+Each prints `ok` and nothing else when it is right, and names what it wanted otherwise.
+
+**`routed.slx` is the router's half**, and it is here for a sharper reason than the host's: the whole
+of what `lath/router` decides about a click is read off `mods` and `button`, which the browser puts
+on the event and nothing in `slate test tests` can produce. A cmd-click, a ctrl-click, a shift-click,
+an alt-click, a middle click and a link to another origin all have to be left to the browser, and a
+plain left click on the same anchor has to be taken -- which is the pair that says the six were
+refused for what they were and not because the link was broken.
+
+**`Not implemented: navigation to another Document` six times is the PASS, not noise.** jsdom prints
+it when a click it was given is allowed to do what a click does, so the count is exactly the six the
+router declined. A run where the router wrongly swallowed one would print five.
 
 **jsdom rather than a fake document written here, and that is the point.** A shim written beside the
 code it checks agrees with that code by construction: every mistake `dom.slx`, or slate's own `js_rt_dom.sysl`,
