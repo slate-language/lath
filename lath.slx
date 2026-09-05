@@ -9,9 +9,11 @@
 //
 // **The host is behind an adapter, which is what lets the same components render twice.** Nothing
 // here knows what a node is: `stringHost` builds objects and serialises them, and the DOM host in `dom.slx`
-// creates real elements through the same eight functions. So a page renders to HTML on a server and to
+// creates real elements through the same ten functions. So a page renders to HTML on a server and to
 // the document in a browser from one source -- which is the thing that makes this worth writing in
 // slate rather than reaching for React.
+
+import { patchKids } from "./reconcile.slx"
 
 // -- elements --------------------------------------------------------------------------------
 
@@ -26,12 +28,20 @@ export val Fragment = "#fragment"
 // itself, which every slate value does.
 export type Element = { type: any, props: object, key: any }
 
-// The eight functions a host answers, and nothing above them knows what a node is.
+// The ten functions a host answers, and nothing above them knows what a node is.
 //
 // **A program writing its own host annotates it with this** — `myHost() -> Host` — which is the one
-// check there is that an adapter is whole. It shipped with six of these and needed eight: an adapter
-// with one implementation is a guess, and the two that were missing are `drop` and `mounted`.
-export type Host = { element: function, text: function, setProps: function, setKids: function, setText: function, serialise: function, drop: function, mounted: function, adopt: function }
+// check there is that an adapter is whole. It shipped with six of these and needs ten: an adapter
+// with one implementation is a guess, and not one of the four that arrived later was guessable from
+// the first implementation.
+//
+// **`insert` and `remove` replaced a `setKids` that took the whole list.** Replacing a parent's
+// children is one call and the right answer while the only host is a string; on a page it rebuilds a
+// thousand rows to move three, and takes the focus, the selection and the scroll position with them.
+// `insert(parent, node, before)` puts a node in front of `before`, or at the end where that is
+// `null`, **and moves it where the parent already holds it** — which is what `insertBefore` does and
+// is the whole of how a reorder is spelled.
+export type Host = { element: function, text: function, setProps: function, setText: function, serialise: function, drop: function, mounted: function, adopt: function, insert: function, remove: function }
 
 // What every element in the source is desugared into.
 //
@@ -133,8 +143,11 @@ hookCell(fresh: object) -> object =
 // description made fresh every time; the instance holds the hooks, the host node and the children it
 // was matched against, which is the whole reason a component's state does not go when its props
 // change.
+// **`nodes` is what the host was last told this instance's children are**, and it is the other half
+// of the diff: a parent that does not remember what it put there can only replace the lot.
 instance(root: object, parent, el, kind: string) -> object =
-    { root: root, parent: parent, el: el, kind: kind, key: null, hooks: [], kids: [], node: null, gone: false }
+    { root: root, parent: parent, el: el, kind: kind, key: null, hooks: [], kids: [], nodes: [],
+      node: null, gone: false, epoch: -1, caught: null }
 
 // What a child amounts to: nothing, a string, or an element.
 //
@@ -154,6 +167,7 @@ flatten(kids: array, out: array) -> array =
 
 kindOf(el) -> string =
     if el is string || el is number then "text"
+    elif el.type == Portal then "portal"
     elif el.type == Fragment then "fragment"
     elif el.type is function then "component"
     else "host"
@@ -169,6 +183,10 @@ matches(old, el) -> boolean =
     if old.kind == "text" then return true
     if old.key != (el.key ?? null) then return false
 
+    // **A portal that is given a different container is a different portal.** Its children would
+    // otherwise be updated in place and left in the container they were put in first.
+    if old.kind == "portal" then return old.el.props.into == el.props.into
+
     old.el.type == el.type
 
 // -- reconciling -----------------------------------------------------------------------------
@@ -179,6 +197,10 @@ reconcile(root: object, parent, old, el) -> object =
         if old != null then unmount(old)
 
         return build(root, parent, el)
+
+    // **The one place a subtree is not rendered at all.** `old.el` is deliberately left alone: the
+    // props a skipped component compares against next time are the ones it last actually rendered.
+    if old.kind == "component" && skips(old, el) then return old
 
     old.el = el
 
@@ -277,14 +299,12 @@ update(inst: object) =
         return null
 
     if inst.kind == "component"
-        rendering = inst
-        slot = 0
+        renderComponent(inst)
 
-        val out = inst.el.type(inst.el.props)
+        return null
 
-        rendering = null
-
-        reconcileKids(inst, [out])
+    if inst.kind == "portal"
+        renderPortal(inst)
 
         return null
 
@@ -317,12 +337,106 @@ update(inst: object) =
         // This element's own index, put on by `claimElement` and kept while its children were walked.
         pop(root.trail)
 
-    // **Nothing is SET during hydration.** Every child was adopted from this node at consecutive
-    // positions and the count was just checked, so the list is already what it should be -- and
-    // setting it would be a mutation, which is the one thing a hydrated page must not make.
-    if inst.kind == "host" && outer == null then inst.root.host.setKids(inst.node, childNodes(inst))
+    if inst.kind == "host" then holdKids(inst, outer == null)
 
     null
+
+// A component rendered, and its answer matched against what it rendered before.
+renderComponent(inst: object) =
+    rendering = inst
+    slot = 0
+
+    val out = inst.el.type(inst.el.props)
+
+    rendering = null
+
+    inst.epoch = contextEpoch
+
+    if inst.el.type != Boundary
+        reconcileKids(inst, [out])
+
+        return null
+
+    // Once a boundary has caught something it renders the fallback and not its children, which is
+    // what stops a subtree that faults on every render from faulting on every render.
+    if inst.caught != null
+        reconcileKids(inst, [inst.el.props.fallback(inst.caught)])
+
+        return null
+
+    try
+        reconcileKids(inst, [out])
+    catch e
+        recoverAt(inst, e)
+
+    null
+
+// A portal's children, rendered into the container the portal names.
+//
+// **A portal contributes no nodes to the parent that wrote it**, which is what lets a dialog written
+// inside a table row escape the row: its children stand in another parent entirely.
+renderPortal(inst: object) =
+    val root = inst.root
+    val outer = root.claim
+
+    // **Hydration does not adopt a portal's content.** What a server sent has the portal's children
+    // wherever the portal put them and not where the element was written, so the cursor walking this
+    // parent's children must not step over them -- the content is built rather than claimed.
+    root.claim = null
+
+    reconcileKids(inst, inst.el.props.children)
+
+    root.claim = outer
+
+    val next = childNodes(inst)
+
+    patchKids(root.host, inst.el.props.into, inst.nodes, next)
+
+    inst.nodes = next
+
+    null
+
+// The children a host node holds now, told to the host as the smallest run of moves that gets there.
+//
+// **During hydration nothing is told at all**, which is what `write` is false for: every child was
+// adopted from this very node at consecutive positions and the count was just checked, so the list
+// is already right -- and touching it would be a mutation, the one thing a hydrated page must not
+// make. The list is remembered either way, because the render after this one diffs against it.
+holdKids(inst: object, write: boolean) =
+    val next = childNodes(inst)
+
+    if write then patchKids(inst.root.host, inst.node, inst.nodes, next)
+
+    inst.nodes = next
+
+    null
+
+// The nearest boundary above `inst`, handed what went wrong.
+//
+// **The failed subtree is unmounted rather than left half-built**, and the boundary renders its
+// fallback with the fault object in its hands. Nothing is swallowed: the value reaches the fallback,
+// which is an ordinary component and may show it, log it or send it somewhere.
+recoverAt(inst, e) -> boolean =
+    var at = inst
+
+    while at != null
+        if at.kind == "component" && at.el.type == Boundary
+            // The render that faulted left this set, there being no statement of its own left to run.
+            rendering = null
+
+            for kid in at.kids
+                unmount(kid)
+
+            at.kids = []
+            at.caught = e
+
+            reconcileKids(at, [at.el.props.fallback(e)])
+
+            return true
+
+        at = at.parent
+
+    false
 
 // The children, matched against the ones that stood there before.
 //
@@ -381,6 +495,9 @@ contains(xs: array, v) -> boolean =
 nodesOf(inst: object) -> array =
     if inst.kind == "text" || inst.kind == "host" then return [inst.node]
 
+    // **A portal answers NONE**, its children standing in a container of its own.
+    if inst.kind == "portal" then return []
+
     childNodes(inst)
 
 // The nodes an instance's CHILDREN stand for.
@@ -401,6 +518,9 @@ childNodes(inst: object) -> array =
 unmount(inst: object) =
     inst.gone = true
 
+    // A portal's children stand in a container of their own, and this is what takes them out of it.
+    if inst.kind == "portal" then patchKids(inst.root.host, inst.el.props.into, inst.nodes, [])
+
     for kid in inst.kids
         unmount(kid)
 
@@ -409,10 +529,12 @@ unmount(inst: object) =
             cell.cleanup()
             cell.cleanup = null
 
-    // **The host is told the node has gone.** For the string host that is nothing; for a DOM host it
-    // is what gives back the table slot the node was standing in, and without it a long-running
-    // interface grows a table as long as everything it has ever rendered.
-    if inst.node != null then inst.root.host.drop(inst.node)
+    // **The host is told the node has gone, and it is told at the COMMIT rather than here.** For the
+    // string host it is nothing; for a DOM host it is what gives back the table slot the node stood
+    // in, and without it a long-running interface grows a table as long as everything it has ever
+    // rendered. It waits for the commit because a node is taken out of its parent BY HANDLE -- a
+    // host handed the handle back first would have nothing left to take out.
+    if inst.node != null then push(inst.root.dropped, inst.node)
 
     null
 
@@ -471,7 +593,8 @@ export hydrate(el, host = null) -> object =
     root
 
 newRoot(host) -> object =
-    { host: host, inst: null, pending: [], effects: [], scheduled: false, claim: null, trail: [] }
+    { host: host, inst: null, pending: [], effects: [], scheduled: false, claim: null, trail: [],
+      nodes: [], dropped: [] }
 
 // The rendered tree as text, which is what the string host is for.
 export html(root: object) -> string = root.host.serialise(nodesOf(root.inst))
@@ -490,7 +613,7 @@ export flush(root: object) =
         root.pending = []
 
         for inst in waiting
-            if !inst.gone then update(inst)
+            if !inst.gone then rendered(inst)
 
         // A component that re-rendered may have changed what its parent's host node holds.
         refreshNodes(root.inst)
@@ -499,24 +622,63 @@ export flush(root: object) =
 
     null
 
-// The effects the render queued, run outermost first, each after its own cleanup.
+// A component whose state changed, rendered -- and the nearest boundary told where it faulted.
+//
+// **The `try` is here and not around the whole flush**, so that one component failing does not take
+// the rest of the queue with it.
+rendered(inst: object) =
+    try
+        update(inst)
+    catch e
+        // A boundary catches its own children and never itself, so the search starts above.
+        if !recoverAt(inst.parent, e) then throw e
+
+    null
+
+// What the render leaves the host to do: the top of the tree, the nodes that went, and the effects.
 commit(root: object) =
     // **A hydrating commit does not hand the host the top of the tree**, because those nodes are
     // already the container's children and putting them there again is a mutation -- which is the one
-    // thing a hydrated page must not make. Every commit after this one does.
+    // thing a hydrated page must not make. It is remembered, so the commit after this one has
+    // something to compare against.
     if root.claim != null
+        root.nodes = nodesOf(root.inst)
+
+        released(root)
         runEffects(root)
 
         return null
 
-    // **The host is handed the top of the tree on every commit, not only the first.** A host node's
-    // children are set by the reconciler, but the nodes at the very TOP have no host node above them
-    // -- so when a component at the root renders a different set, nothing would have told the host.
-    // The string host cannot see the difference, `html` walking the tree afresh each time; a DOM
-    // host would leave an element on the page that the program had stopped rendering.
-    root.host.mounted(nodesOf(root.inst))
+    val nodes = nodesOf(root.inst)
 
+    // **The host is handed the top of the tree whenever that set CHANGES, and not only the first
+    // time.** A host node's children are patched by the reconciler, but the nodes at the very TOP
+    // have no host node above them -- so when a component at the root renders a different set,
+    // nothing else would have told the host. The string host cannot see the difference, `html`
+    // walking the tree afresh each time; a DOM host would leave an element on the page that the
+    // program had stopped rendering.
+    //
+    // **Comparing first is what keeps a re-render from touching the container**: handing a host the
+    // same list again is a whole child list replaced with itself, which an observer sees, styles
+    // recompute for, and a scroll position is lost to.
+    if root.nodes != nodes
+        root.nodes = nodes
+
+        root.host.mounted(nodes)
+
+    released(root)
     runEffects(root)
+
+// The nodes the render tore down, given back to the host now that they have left the page.
+released(root: object) =
+    val gone = root.dropped
+
+    root.dropped = []
+
+    for node in gone
+        root.host.drop(node)
+
+    null
 
 // The effects the render queued, run outermost first, each after its own cleanup.
 runEffects(root: object) =
@@ -532,11 +694,22 @@ runEffects(root: object) =
     null
 
 // A component re-rendered underneath a host node, so that node's children have changed.
+//
+// **A walk of the whole tree that asks the host for nothing where nothing moved**, which is what the
+// diff bought: every host node compares the children it holds against the ones it held, and a node
+// whose subtree did not change is two array reads and no host call at all.
 refreshNodes(inst: object) =
     for kid in inst.kids
         refreshNodes(kid)
 
-    if inst.kind == "host" then inst.root.host.setKids(inst.node, childNodes(inst))
+    if inst.kind == "host" then holdKids(inst, true)
+
+    if inst.kind == "portal"
+        val next = childNodes(inst)
+
+        patchKids(inst.root.host, inst.el.props.into, inst.nodes, next)
+
+        inst.nodes = next
 
     null
 
@@ -565,16 +738,175 @@ scheduled(root: object) =
 
     flush(root)
 
+// -- context ---------------------------------------------------------------------------------
+
+// **What a provider changing counts as**, and it is one number rather than a subscription list. See
+// `skips` for the whole of what it buys.
+var contextEpoch = 0
+
+// A value handed to a whole subtree without being passed through every component in between.
+//
+//     val Theme = createContext("light")
+//
+//     App(props) = <Theme.Provider value="dark"><Page/></Theme.Provider>
+//
+//     Page(props) = <p class={useContext(Theme)}>dark or light</p>
+//
+// **The provider is a FIELD of the context rather than a second name to import**, which is React's
+// arrangement and works here for a reason worth knowing: a dot inside a tag is an ordinary field
+// selection, so `<Theme.Provider>` needs nothing from slate that `<Menu.Item>` does not.
+//
+// **A context is compared by identity and not by name**, so two contexts with the same default are
+// two contexts, and a program may make one per module without arranging anything.
+export createContext(fallback = null) -> object =
+    val ctx = { fallback: fallback, Provider: null }
+
+    provider(props: object) =
+        val last = useRef({ set: false, value: null })
+
+        // **A change is noticed HERE, at the provider, and not by the consumers.** What it does is
+        // move a counter that every memoised component is compared against, which is what makes a
+        // provider's change reach a consumer standing under a `memo`.
+        if !last.current.set || last.current.value != props.value
+            last.current = { set: true, value: props.value }
+
+            contextEpoch = contextEpoch + 1
+
+        props.children
+
+    ctx.Provider = provider
+
+    ctx
+
+// The nearest provider's value, or the context's own default where nothing above provided one.
+//
+// **A missing provider is the DEFAULT and not a fault**, which is React's rule and the useful one: a
+// component that reads a theme can be rendered on its own in a test, and a context whose absence
+// really is a mistake says so by making its default a value that complains.
+//
+// **It is not a hook**, keeping no slot of its own -- so unlike `useState` it may be called inside a
+// condition. The name follows React's because everything else about it does.
+export useContext(ctx: object) =
+    var at = rendering
+
+    while at != null
+        if at.kind == "component" && at.el.type == ctx.Provider then return at.el.props.value
+
+        at = at.parent
+
+    ctx.fallback
+
+// -- memo ------------------------------------------------------------------------------------
+
+// The components `memo` has wrapped, and how each of them compares its props.
+//
+// **A table rather than a mark on the function**, slate having nowhere to hang a field on a function
+// value. A function compares by identity, so walking this finds the right entry and nothing else.
+var memos = []
+
+// A component that is not rendered again while its props are what they were.
+//
+//     val Row = memo(row)
+//     val Row = memo(row, (was, now) -> was.id == now.id)
+//
+// **The comparison is slate's `==`, which is STRUCTURAL**, where React's default is field-by-field
+// identity. That is this package's standing divergence read once more: props rebuilt with the same
+// fields are the same props. A handler written as a fresh lambda every render is still a change, a
+// function comparing by identity -- which is what `useCallback` is for, there as here.
+//
+// **A provider that changed value renders through every memo below it**, which is a deliberate
+// pessimism: tracking which subtree reads which context is a great deal of machinery to avoid a
+// render on the one turn a provider actually changed.
+export memo(component: function, areEqual = null) -> function =
+    if areEqual != null && !(areEqual is function)
+        throw "memo's second argument is how two props compare, and this is " + string(areEqual)
+
+    memoised(props: object) = component(props)
+
+    push(memos, { fn: memoised, same: areEqual })
+
+    memoised
+
+memoOf(f) =
+    for m in memos
+        if m.fn == f then return m
+
+    null
+
+// Whether an update may be skipped altogether, which is the one place the framework does not render.
+skips(old: object, el) -> boolean =
+    val m = memoOf(el.type)
+
+    if m == null then return false
+    if old.epoch != contextEpoch then return false
+
+    val answer = if m.same == null then old.el.props == el.props else m.same(old.el.props, el.props)
+
+    // **A comparator that answers something else is a fault naming the comparator**, not a silent
+    // truthiness test: `0` is true in slate and false in JavaScript, so a comparator ported from
+    // React would otherwise skip every render and be extremely hard to see.
+    if !(answer is boolean)
+        // **The brackets are what continue the line**, a trailing `+` outside a bracket pair not
+        // being a continuation in slate.
+        throw ("memo's comparator answers whether two props are the same, and this answered " +
+            string(answer))
+
+    answer
+
+// -- error boundaries --------------------------------------------------------------------------
+
+// A component that renders something else when its subtree faults.
+//
+//     <Boundary fallback={(e) -> <p class="broken">{e.message}</p>}>
+//         <Page/>
+//     </Boundary>
+//
+// **A RENDER FAULT STAYS A FAULT, and this CATCHES one rather than turning it into a result.** slate's
+// two channels decide that and not React: a result is for a condition the caller was always going to
+// deal with, and a component that cannot render is a defect in the program. So no component is handed
+// an `{ ok: false }` to look at -- the fault unwinds to the nearest boundary exactly as it would
+// unwind to a `try`, which is what this is.
+//
+// **Nothing is swallowed.** The subtree that failed is unmounted and `fallback` is called with the
+// fault object -- `message`, `line` and `file` -- so a boundary that shows nothing is one somebody
+// wrote to show nothing.
+//
+// **It does not catch its own render**, which is React's rule for React's reason: the fallback is
+// this component's answer, and a component whose own body faults has nothing left to answer with.
+// Put a boundary above it.
+export Boundary(props: object) -> array = props.children
+
+// -- portals ---------------------------------------------------------------------------------
+
+// What a portal is an element of. A string no tag can be, so it never collides with a host name.
+export val Portal = "#portal"
+
+// A subtree rendered into a container somewhere else.
+//
+//     createPortal(<Dialog/>, byId("modals"))
+//
+// **The container is the HOST's kind of node and not an element.** On a page it is what `byId` or
+// `query` answers; on a string host it is what `stringHost().element("div")` answers. A portal's
+// children are that node's children, and the parent that wrote the portal is handed none of them --
+// which is what lets a dialog written inside a table row escape the row.
+//
+// **On a string host it renders into the node it was given and `html(root)` does not show it**,
+// unless that node is itself somewhere in the tree being serialised. That is the honest answer
+// rather than a fault: a portal is content put *somewhere else*, and where a server puts it is the
+// server's business -- `serialise` of the container is how a server asks what went there.
+export createPortal(el, into) -> Element =
+    { type: Portal, props: { into: into, children: [el] }, key: null }
+
 // -- the string host -------------------------------------------------------------------------
 
-// **Eight functions, and nothing above them knows what a node is.** A DOM host answers the same eight
+// **Ten functions, and nothing above them knows what a node is.** A DOM host answers the same ten
 // over real elements, which is what makes the components on both sides one set of components. It
-// shipped with six and needed `drop` and `mounted`; the count here said six for two releases after
-// that, which is what a number written in prose does.
+// shipped with six, needed `drop` and `mounted` to render into a document, `adopt` to hydrate one,
+// and `insert` and `remove` in place of a `setKids` that replaced a whole list.
 export stringHost() -> Host =
-    { element: hostElement, text: hostText, setProps: hostSetProps, setKids: hostSetKids,
+    { element: hostElement, text: hostText, setProps: hostSetProps,
       setText: hostSetText, serialise: serialiseNodes, drop: hostDrop, mounted: hostMounted,
-      adopt: hostAdopt }
+      adopt: hostAdopt, insert: hostInsert, remove: hostRemove }
 
 // **A string host has nothing to hydrate, and this FAULTS rather than answering nothing.** A server
 // is the thing that renders the markup a page hydrates; it never hydrates anything itself. Answering
@@ -584,7 +916,41 @@ hostAdopt(parent, index: integer) =
     throw "a string host has nothing to hydrate -- markup is what it produces, not what it adopts"
 
 
-hostElement(tag: string) -> object = { tag: tag, props: {}, kids: [] }
+// **A string host's node carries an `id`, and the diff is the whole reason.** slate compares objects
+// STRUCTURALLY, so two `<li>` elements holding the same text are one value -- and a reconciler asking
+// "where does this node stand now" would find the first of them every time and put a list of repeated
+// rows in the wrong order. A DOM node is a handle the page's own table minted and is unique already;
+// this is that guarantee, written out for the host that has no table.
+var minted = 0
+
+nextId() -> integer =
+    minted = minted + 1
+
+    minted
+
+hostElement(tag: string) -> object = { id: nextId(), tag: tag, props: {}, kids: [] }
+
+// A node put in front of `before`, or at the end where that is `null`.
+//
+// **A node the parent already holds is MOVED**, which is what `insertBefore` does and is the whole of
+// how a keyed reorder is spelled: taken out of where it stood and put in where it goes.
+hostInsert(parent: object, node, before) =
+    val was = parent.kids.indexOf(node)
+
+    if was != null then removeAt(parent.kids, was)
+
+    val to = if before == null then null else parent.kids.indexOf(before)
+
+    if to == null then push(parent.kids, node) else insert(parent.kids, to, node)
+
+    null
+
+hostRemove(parent: object, node) =
+    val at = parent.kids.indexOf(node)
+
+    if at != null then removeAt(parent.kids, at)
+
+    null
 
 // A string host's node is an ordinary object and the collector takes it; there is nothing to give
 // back. The function exists so that the adapter is one shape rather than two.
@@ -595,13 +961,10 @@ hostDrop(node) = null
 // elements that are not in the page until something appends them, which is what this is for.
 hostMounted(nodes: array) = null
 
-hostText(s: string) -> object = { text: s }
+hostText(s: string) -> object = { id: nextId(), text: s }
 
 hostSetProps(node: object, props: object) =
     node.props = props
-
-hostSetKids(node: object, kids: array) =
-    node.kids = kids
 
 hostSetText(node: object, s: string) =
     node.text = s

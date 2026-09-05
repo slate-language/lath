@@ -12,13 +12,25 @@ import { createElement, Fragment, mount, hydrate, html, flush, stringHost, useSt
 // nothing, sets no child list, and writes no attribute that was already right.
 
 // A node of the little page these tests hydrate against. An element, or text.
-tag(name: string, attrs: object, kids: array) -> object = { tag: name, attrs: attrs, kids: kids }
+//
+// **The `id` is what makes two nodes two nodes.** slate compares objects structurally, so a page with
+// the same text in two places would otherwise hand the reconciler one node twice -- which is the same
+// reason `stringHost`'s nodes carry one.
+var minted = 0
 
-words(s: string) -> object = { tag: null, attrs: {}, kids: [], text: s }
+fresh() -> integer =
+    minted = minted + 1
+
+    minted
+
+tag(name: string, attrs: object, kids: array) -> object =
+    { id: fresh(), tag: name, attrs: attrs, kids: kids }
+
+words(s: string) -> object = { id: fresh(), tag: null, attrs: {}, kids: [], text: s }
 
 // A host over a page the test built, counting everything it was asked to change.
 pageHost(top: array) =
-    val seen = { made: 0, wrote: 0, kids: 0, text: 0, mounts: 0 }
+    val seen = { made: 0, wrote: 0, put: 0, took: 0, text: 0, mounts: 0 }
     val root = tag("#root", {}, top)
 
     made(node) =
@@ -43,9 +55,27 @@ pageHost(top: array) =
 
         null
 
-    setKids(node: object, kids: array) =
-        node.kids = kids
-        seen.kids = seen.kids + 1
+    // **Two operations where there was one `setKids`**, and the count is the measurement: a hydrated
+    // page makes neither, because every child was adopted from its parent in order.
+    insertKid(parent: object, node: object, before) =
+        val was = parent.kids.indexOf(node)
+
+        if was != null then removeAt(parent.kids, was)
+
+        val to = if before == null then null else parent.kids.indexOf(before)
+
+        if to == null then push(parent.kids, node) else insert(parent.kids, to, node)
+
+        seen.put = seen.put + 1
+
+        null
+
+    removeKid(parent: object, node: object) =
+        val at = parent.kids.indexOf(node)
+
+        if at != null then removeAt(parent.kids, at)
+
+        seen.took = seen.took + 1
 
         null
 
@@ -80,8 +110,9 @@ pageHost(top: array) =
 
         { node: node, tag: node.tag, text: node.text ?? "" }
 
-    { element: element, text: text, setProps: setProps, setKids: setKids, setText: setNodeText,
-      serialise: serialise, drop: drop, mounted: mounted, adopt: adopt, where: "page", seen: seen }
+    { element: element, text: text, setProps: setProps, setText: setNodeText,
+      serialise: serialise, drop: drop, mounted: mounted, adopt: adopt,
+      insert: insertKid, remove: removeKid, where: "page", seen: seen }
 
 isOn(name: string) -> boolean =
     name.len() > 2 && name[0..<2] == "on" && name[2] == name[2].upper()
@@ -121,7 +152,8 @@ A_HYDRATED_PAGE_CREATES_NOTHING_AND_SETS_NO_CHILD_LIST()
     hydrate(<Same/>, host)
 
     assertEq(host.seen.made, 0)
-    assertEq(host.seen.kids, 0)
+    assertEq(host.seen.put, 0)
+    assertEq(host.seen.took, 0)
     assertEq(host.seen.text, 0)
 
 @test
@@ -154,7 +186,11 @@ A_MOUNTED_RENDER_MAKES_EVERYTHING_A_HYDRATED_ONE_ADOPTS()
     mount(<Same/>, host)
 
     assertEq(host.seen.made, 4)
-    assertEq(host.seen.kids, 2)
+
+    // The `<b>`'s one child, and the `<p>`'s two: three children put where they go, and nothing
+    // taken out. A render that replaced a whole child list would say two, whatever the lists held.
+    assertEq(host.seen.put, 3)
+    assertEq(host.seen.took, 0)
 
 @test
 A_TAG_THAT_DOES_NOT_MATCH_IS_A_FAULT_NAMING_THE_PATH_AND_BOTH_SIDES()

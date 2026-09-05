@@ -1,0 +1,135 @@
+// The child-list diff: which of a parent's children move, which arrive and which go.
+//
+// **This is the file the framework's cost is decided in.** Everything else in lath is bookkeeping
+// about instances; this is what turns "the children are now these" into the smallest run of host
+// operations that makes it so. Before it existed a host node's whole child list was replaced on
+// every change, which is one call and the right answer while the only host is a string -- and on a
+// page it rebuilds a thousand rows to move three.
+//
+// **It is a separate file because `lath.slx` is the public surface and this is not.** Nothing here
+// is exported to a consumer; `lath.slx` imports the two names below and nobody else does.
+//
+// **THE ALGORITHM IS THE LONGEST-INCREASING-SUBSEQUENCE ONE, and the choice is worth the sentence.**
+// The other answer is React's index walk, which keeps a cursor into the old list and moves anything
+// that is not where the cursor stands: it is a dozen lines shorter and it emits a move for every
+// child that was passed over, so reversing a list of a thousand rows costs a thousand moves where
+// this costs nine hundred and ninety-nine -- but rotating one row from the end to the front costs
+// this ONE move and costs the index walk a thousand. The pathological case of the simple algorithm
+// is a list scrolled by one, which is what an infinite list does on every frame; the pathological
+// case of this one is a list reversed, which nothing does twice. **The run this keeps is the set of
+// children that need not move at all**, and every child outside it is inserted before the one that
+// follows it -- which for a host is a move, `insertBefore` being how a DOM moves a node it already
+// holds.
+
+// A parent's children, changed from `old` to `next` with the fewest operations that will do it.
+//
+// **The nodes are compared with `==` and that is why a string host's nodes carry an `id`.** slate's
+// equality is structural, so two `<li>` elements holding the same text would otherwise be the same
+// node to this function and a list of repeated rows would diff into nonsense. A DOM node is a handle
+// -- an integer the page's own table minted -- and is unique already.
+export patchKids(host: object, parent, old: array, next: array) =
+    // **The common case is a re-render that changed a text node and nothing else**, where the two
+    // lists are the same nodes in the same order and there is nothing at all for the host to do.
+    if old == next then return null
+
+    for node in old
+        if next.indexOf(node) == null then host.remove(parent, node)
+
+    // What survived, in the order the parent still holds it. Every position below is into this.
+    var kept = []
+
+    for node in old
+        if next.indexOf(node) != null then push(kept, node)
+
+    var pos = []
+
+    for node in next
+        push(pos, kept.indexOf(node))
+
+    var stays = []
+
+    for p in pos
+        push(stays, false)
+
+    for i in longestRun(pos)
+        stays[i] = true
+
+    // **Right to left, because an insertion needs the node that FOLLOWS it.** `anchor` is the child
+    // already known to be in its final place, and `null` is the end of the list.
+    var anchor = null
+    var i = next.len() - 1
+
+    while i >= 0
+        if pos[i] == null || !stays[i] then host.insert(parent, next[i], anchor)
+
+        anchor = next[i]
+        i = i - 1
+
+    null
+
+// The longest run of children already in the right relative order, as positions in `pos`.
+//
+// `pos` holds, for each child of the new list, where it stood in the old one -- or `null` for a
+// child that was not there at all, which can never be part of a run and is always inserted.
+//
+// **This is the textbook patience-sorting longest-increasing-subsequence**, in its predecessor form
+// so that the run itself comes back rather than only its length: `best` holds one position per
+// length of run found so far, `prev` remembers what each position followed, and the answer is walked
+// backwards from the end of the longest.
+longestRun(pos: array) -> array =
+    var prev = []
+    var best = []
+    var i = 0
+
+    for p in pos
+        push(prev, null)
+
+    while i < pos.len()
+        val p = pos[i]
+
+        if p == null
+            i = i + 1
+            continue
+
+        if best.len() == 0
+            push(best, i)
+
+            i = i + 1
+            continue
+
+        val last = best[best.len() - 1]
+
+        if pos[last] < p
+            prev[i] = last
+
+            push(best, i)
+
+            i = i + 1
+            continue
+
+        // The first run whose end is not smaller than this child, which this child replaces: a run
+        // of the same length ending earlier leaves more room for whatever comes next.
+        var lo = 0
+        var hi = best.len() - 1
+
+        while lo < hi
+            val mid = (lo + hi) / 2
+
+            if pos[best[mid]] < p then lo = mid + 1 else hi = mid
+
+        if p < pos[best[lo]]
+            if lo > 0 then prev[i] = best[lo - 1]
+
+            best[lo] = i
+
+        i = i + 1
+
+    var out = []
+    var at = if best.len() == 0 then null else best[best.len() - 1]
+
+    while at != null
+        push(out, at)
+
+        at = prev[at]
+
+    out.reversed()

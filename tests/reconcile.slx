@@ -1,0 +1,210 @@
+import { createElement, Fragment, mount, html, flush, stringHost, useState } from "../lath.slx"
+
+// The child-list diff -- what the host is actually asked to do when a list changes.
+//
+// **This is the file the framework's cost is pinned in, and markup cannot pin it.** Every test in
+// `keys.slx` would pass just as well against a reconciler that replaced a host node's whole child
+// list on every render: the markup that comes out is identical, and the difference is a thousand
+// nodes rebuilt to move three. So the assertion here is the OPERATIONS, in order, against a host
+// that writes down what it was asked.
+//
+// **The nodes are named by their markup**, which is what makes an expectation readable -- `insert
+// <li>c</li> before <li>a</li>` says what happened and a pair of node handles does not.
+
+// A host that answers everything the string host does and records every child operation.
+recorder() =
+    val seen = { ops: [] }
+    val inner = stringHost()
+
+    // The node as it stands NOW, which is why it is taken before the operation is applied.
+    name(node) = inner.serialise([node])
+
+    put(parent, node, before)
+        val where = if before == null then " at the end" else " before " + name(before)
+
+        push(seen.ops, "insert " + name(node) + where)
+
+        inner.insert(parent, node, before)
+
+    take(parent, node)
+        push(seen.ops, "remove " + name(node))
+
+        inner.remove(parent, node)
+
+    inner with { insert: put, remove: take, seen: seen }
+
+// A list of keyed rows, and the setter that changes which rows there are.
+//
+// **The rows are `<li>` elements and not components**, so that nothing between the list and the host
+// can absorb a move: what the host is asked for is what the reconciler decided.
+listing(host, first: array) -> object =
+    var setter = null
+
+    List(props: object) =
+        val [names, set] = useState(first)
+
+        setter = set
+
+        <ul>{names.map(name -> <li key={name}>{name}</li>)}</ul>
+
+    val root = mount(<List/>, host)
+
+    // Everything the first render asked for is the build and not a change; the tests below are about
+    // what a CHANGE costs.
+    clear(host.seen.ops)
+
+    { root: root, to: setter }
+
+clear(xs: array) =
+    loop
+        if xs.len() == 0 then break
+
+        removeAt(xs, 0)
+
+// The list changed, and what the host was asked to do about it.
+after(it: object, names: array) -> array =
+    it.to(names)
+
+    flush(it.root)
+
+    it.root.host.seen.ops
+
+@test
+A_ROW_APPENDED_COSTS_THE_NEW_ROW_AND_NOTHING_ELSE()
+    val host = recorder()
+    val it = listing(host, ["a", "b"])
+
+    // **Two operations and both are the change**: the new row's own text goes into the new `<li>`,
+    // and the new `<li>` goes into the list. Nothing that was already there is touched.
+    assertEq(after(it, ["a", "b", "c"]), ["insert c at the end", "insert <li>c</li> at the end"])
+    assertEq(html(it.root), "<ul><li>a</li><li>b</li><li>c</li></ul>")
+
+@test
+A_ROW_PREPENDED_MOVES_NOTHING_THAT_WAS_ALREADY_THERE()
+    // **The case the simple answer gets wrong.** A reconciler that walked the two lists in step would
+    // find `a` where `b` stands and move every row after it; the run that is already in order is
+    // `[b, c]`, so only the new row is put anywhere.
+    val host = recorder()
+    val it = listing(host, ["b", "c"])
+
+    assertEq(after(it, ["a", "b", "c"]), ["insert a at the end", "insert <li>a</li> before <li>b</li>"])
+    assertEq(html(it.root), "<ul><li>a</li><li>b</li><li>c</li></ul>")
+
+@test
+A_ROW_TAKEN_OUT_OF_THE_MIDDLE_IS_ONE_REMOVE()
+    val host = recorder()
+    val it = listing(host, ["a", "b", "c"])
+
+    assertEq(after(it, ["a", "c"]), ["remove <li>b</li>"])
+    assertEq(html(it.root), "<ul><li>a</li><li>c</li></ul>")
+
+@test
+TWO_ROWS_SWAPPED_IS_ONE_MOVE_AND_NOT_TWO()
+    // **A move is an insert of a node the parent already holds**, which is what `insertBefore` means:
+    // `b` is taken out of where it stood and put in front of `a`, and `a` and `c` are never touched.
+    val host = recorder()
+    val it = listing(host, ["a", "b", "c"])
+
+    assertEq(after(it, ["b", "a", "c"]), ["insert <li>b</li> before <li>a</li>"])
+    assertEq(html(it.root), "<ul><li>b</li><li>a</li><li>c</li></ul>")
+
+@test
+A_LIST_REVERSED_MOVES_EVERY_ROW_BUT_ONE()
+    // **The worst case of this algorithm, said out loud.** One row can stay where it is and the rest
+    // have to move, which is the true minimum for a reversal -- and it is two operations rather than
+    // the three a whole-list replacement performs on the same change.
+    val host = recorder()
+    val it = listing(host, ["a", "b", "c"])
+
+    assertEq(after(it, ["c", "b", "a"]),
+        ["insert <li>b</li> before <li>a</li>", "insert <li>c</li> before <li>b</li>"])
+    assertEq(html(it.root), "<ul><li>c</li><li>b</li><li>a</li></ul>")
+
+@test
+A_REORDER_WITH_AN_INSERT_MOVES_ONLY_WHAT_IS_OUT_OF_ORDER()
+    // `a b c d` becomes `a c x b d`: `c` and `x` are put where they go and `a`, `b` and `d` -- the
+    // longest run already in the right relative order -- are left alone.
+    val host = recorder()
+    val it = listing(host, ["a", "b", "c", "d"])
+
+    assertEq(after(it, ["a", "c", "x", "b", "d"]),
+        ["insert x at the end", "insert <li>x</li> before <li>b</li>",
+         "insert <li>c</li> before <li>x</li>"])
+    assertEq(html(it.root), "<ul><li>a</li><li>c</li><li>x</li><li>b</li><li>d</li></ul>")
+
+@test
+THE_COUNT_IS_THE_SIZE_OF_THE_CHANGE_AND_NOT_THE_SIZE_OF_THE_LIST()
+    // **The claim the whole file exists for.** Thirty rows, three of them moved to the front: the
+    // work is the three and not the thirty, and a whole-list replacement cannot tell the difference
+    // between this change and any other.
+    var names = []
+
+    for i in 0..<30
+        push(names, "r" + string(i))
+
+    val host = recorder()
+    val it = listing(host, names)
+
+    var moved = ["r27", "r28", "r29"]
+
+    for i in 0..<27
+        push(moved, "r" + string(i))
+
+    assertEq(after(it, moved).len(), 3)
+
+    // And the rows themselves were never rebuilt, which is what makes the moves moves.
+    assert(contains(html(it.root), "<ul><li>r27</li><li>r28</li><li>r29</li><li>r0</li>"))
+
+@test
+A_RENDER_THAT_CHANGES_NOTHING_ASKS_THE_HOST_FOR_NOTHING()
+    // **The bail-out, and it is not an optimisation for its own sake**: a re-render that handed a
+    // host the same child list again is a whole list replaced with itself, which an observer sees and
+    // a scroll position is lost to.
+    val host = recorder()
+    val it = listing(host, ["a", "b", "c"])
+
+    assertEq(after(it, ["a", "b", "c"]), [])
+
+@test
+A_LIST_EMPTIED_REMOVES_EVERY_ROW_AND_A_LIST_FILLED_INSERTS_EVERY_ROW()
+    // The two ends of the scale, which are the one case where the work IS the whole list -- because
+    // the change is.
+    val host = recorder()
+    val it = listing(host, ["a", "b"])
+
+    assertEq(after(it, []), ["remove <li>a</li>", "remove <li>b</li>"])
+    assertEq(html(it.root), "<ul></ul>")
+
+    clear(host.seen.ops)
+
+    // Four: each new row's text into its own `<li>`, and each `<li>` into the list.
+    assertEq(after(it, ["a", "b"]).len(), 4)
+    assertEq(html(it.root), "<ul><li>a</li><li>b</li></ul>")
+
+@test
+ROWS_THAT_LOOK_EXACTLY_ALIKE_ARE_STILL_SEPARATE_ROWS()
+    // **slate compares objects STRUCTURALLY, which is what a string host's node `id` is for.** Three
+    // `<li>same</li>` nodes are one value to `==`, so a diff asking "where does this node stand now"
+    // without an id would find the first of them every time -- and would drop rows or hand the host
+    // the same node twice. The count coming back is what says it did neither.
+    var setter = null
+    val host = recorder()
+
+    List(props: object) =
+        val [keys, set] = useState(["1", "2", "3"])
+
+        setter = set
+
+        <ul>{keys.map(k -> <li key={k}>same</li>)}</ul>
+
+    val root = mount(<List/>, host)
+
+    assertEq(html(root), "<ul><li>same</li><li>same</li><li>same</li></ul>")
+
+    clear(host.seen.ops)
+
+    setter(["3", "1", "2"])
+    flush(root)
+
+    assertEq(host.seen.ops, ["insert <li>same</li> before <li>same</li>"])
+    assertEq(html(root), "<ul><li>same</li><li>same</li><li>same</li></ul>")

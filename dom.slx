@@ -41,6 +41,19 @@ export domHost(into: string) -> Host =
     val attrs = {}
     val hands = {}
 
+    // What each parent holds, keyed by its handle, in order.
+    //
+    // **A cache and not a question asked of the page, because a handle cannot be asked twice.**
+    // `children(node)` mints a FRESH handle for every child it answers, so a second call for the same
+    // element gives a different number -- and the framework holds the first. There is no way to ask
+    // "is this node already in that parent" without remembering, so this remembers.
+    //
+    // **It is also why `slate:dom`'s lack of an `insertBefore` shows here and nowhere else.** The
+    // module can set a whole child list and nothing smaller, so `insert` and `remove` below keep the
+    // list themselves and hand the whole of it over. That is correct and it is not surgical: see the
+    // note on the two functions.
+    val kids = {}
+
     element(tag: string) = createElement(tag)
 
     text(s: string) = createText(s)
@@ -83,8 +96,53 @@ export domHost(into: string) -> Host =
 
         null
 
-    setKids(node: integer, kids: array) =
-        setChildren(node, kids)
+    // The children of one parent, as this host last left them.
+    held(node: integer) -> array =
+        val key = string(node)
+        val list = kids[key] ?? null
+
+        if list != null then return list
+
+        val fresh = []
+
+        kids[key] = fresh
+
+        fresh
+
+    // A node put in front of `before`, or at the end where that is `null`, and MOVED where the
+    // parent already holds it -- which is what `insertBefore` means and how a reorder is spelled.
+    //
+    // **`slate:dom` HAS NO `insertBefore`, so this rebuilds the whole child list.** The list is kept
+    // here rather than read back from the page, so the arithmetic is exact and cheap; what is not
+    // cheap is the last line, `setChildren` being `replaceChildren` and the only way this module has
+    // of changing what a node holds. So a reorder of three rows out of a thousand is three correct
+    // operations that each move a thousand nodes. **The framework above is already surgical** -- the
+    // recording host in `tests/host.slx` pins the exact operations -- and two names on `slate:dom`,
+    // an `insertBefore(parent, node, before)` and a `removeChild(parent, node)`, are the whole of
+    // what stands between that and a page that moves three nodes.
+    insertKid(parent: integer, node: integer, before) =
+        val list = held(parent)
+        val was = list.indexOf(node)
+
+        if was != null then removeAt(list, was)
+
+        val to = if before == null then null else list.indexOf(before)
+
+        if to == null then push(list, node) else insert(list, to, node)
+
+        setChildren(parent, list)
+
+        null
+
+    removeKid(parent: integer, node: integer) =
+        val list = held(parent)
+        val at = list.indexOf(node)
+
+        if at == null then return null
+
+        removeAt(list, at)
+
+        setChildren(parent, list)
 
         null
 
@@ -113,6 +171,7 @@ export domHost(into: string) -> Host =
         // above reads either as "nothing was here".
         attrs[key] = null
         hands[key] = null
+        kids[key] = null
 
         release(node)
 
@@ -122,6 +181,10 @@ export domHost(into: string) -> Host =
     // has no idea where a host's nodes are supposed to go -- which is exactly why the same framework
     // renders to a string -- so this is the one function that knows about `el`.
     mounted(nodes: array) =
+        // **A copy, because the framework keeps that array too.** The cache below is written to in
+        // place by `insertKid`, and sharing it would edit the reconciler's own record of the tree.
+        kids[string(el)] = nodes.slice(0)
+
         setChildren(el, nodes)
 
         null
@@ -135,17 +198,29 @@ export domHost(into: string) -> Host =
     // cannot ask a node its tag or its text; the host is the only thing that knows what a node is,
     // and handing back `{ node, tag, text }` is what keeps it that way. `tag` is `null` for a text
     // node, which is how the framework tells the two apart.
+    // **The list is read ONCE per parent and kept**, which is two things at once. `children` mints a
+    // fresh handle for every child it answers, so calling it per index would hand out one handle per
+    // child per child -- a page's whole markup squared -- and the framework would hold a different
+    // number for a node it had already adopted. Keeping the first answer makes the handles stable,
+    // and it leaves this host knowing what every parent holds before a single render has happened,
+    // which is exactly what `insert` and `remove` need after a hydrating render.
     adopt(parent, index: integer) =
-        val kids = children(parent ?? el)
+        val into = parent ?? el
+        val list = held(into)
 
-        if index >= kids.len() then return null
+        if list.len() == 0
+            for kid in children(into)
+                push(list, kid)
 
-        val node = kids[index]
+        if index >= list.len() then return null
+
+        val node = list[index]
 
         { node: node, tag: tagName(node), text: nodeText(node) }
 
-    { element: element, text: text, setProps: setProps, setKids: setKids, setText: setNodeText,
-      serialise: serialise, drop: drop, mounted: mounted, adopt: adopt, into: el, where: into }
+    { element: element, text: text, setProps: setProps, setText: setNodeText,
+      serialise: serialise, drop: drop, mounted: mounted, adopt: adopt,
+      insert: insertKid, remove: removeKid, into: el, where: into }
 
 // A handler by its React spelling, attached under the DOM's: `onClick` is `click`, and dropping the
 // `on` and lowering the letter after it is the whole of the translation.
