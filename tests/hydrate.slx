@@ -1,4 +1,5 @@
-import { createElement, Fragment, mount, hydrate, html, flush, stringHost, style, useState } from "../lath.slx"
+import { createElement, Fragment, mount, hydrate, html, flush, stringHost, style, useState,
+    Boundary } from "../lath.slx"
 
 // Hydration: the same render, taking the nodes already there instead of creating them.
 //
@@ -338,3 +339,214 @@ A_HYDRATING_RENDER_HANDS_ITS_SHEETS_OVER_LIKE_ANY_OTHER()
 
     assertEq(host.seen.styles, 2)
     assertEq(host.seen.sheets, [".a { color: red; }", ".b { color: blue; }"])
+
+// -- text, which is where the markup and the tree can stop agreeing -------------------------------
+
+// **THE MARKUP IS WHAT BOTH SIDES HAVE TO AGREE ABOUT, AND IT CANNOT SAY EVERYTHING A TREE CAN.**
+// Two text children in a row write one run of characters, and an empty one writes nothing at all --
+// so a tree holding two text nodes, or one empty node, asks the page for something no parser could
+// have made. Both are settled in the TREE rather than in the markup: a run is joined before an
+// instance is made, and an empty text child stands for no node in either host.
+
+Adjacent(props: object) = <h2>{2} replies</h2>
+
+Empty(props: object) = <p>{""}</p>
+
+@test
+A_RUN_OF_TEXT_CHILDREN_IS_ONE_NODE_IN_THE_TREE_BECAUSE_IT_IS_ONE_IN_THE_MARKUP()
+    // Two children in the source, one text node made: `<h2>` and the run under it, and one child put
+    // where it goes. A tree that made two would be a tree the markup cannot describe.
+    val host = pageHost([])
+    val root = mount(<Adjacent/>, host)
+
+    assertEq(host.seen.made, 2)
+    assertEq(host.seen.put, 1)
+    assertEq(html(root), "<h2>2 replies</h2>")
+
+@test
+A_RUN_OF_TEXT_CHILDREN_ADOPTS_THE_ONE_NODE_A_PARSER_MADE()
+    // **The defect this closes.** The page has `<h2>2 replies</h2>`, which is one text node; lath
+    // used to want the text `"2"` there and fault on what it found.
+    val host = pageHost([tag("h2", {}, [words("2 replies")])])
+
+    hydrate(<Adjacent/>, host)
+
+    assertEq(host.seen.made, 0)
+    assertEq(host.seen.text, 0)
+    assertEq(host.seen.put, 0)
+    assertEq(host.seen.took, 0)
+
+@test
+A_TEXT_CHILD_BESIDE_A_COMPONENT_THAT_RENDERS_TEXT_IS_THE_ONE_RUN_THAT_CANNOT_BE_JOINED()
+    // **The error path, and it is a real limit rather than an oversight**: the two halves live in
+    // different instances, each with its own node to update, so nothing can join them without one of
+    // them owning half of somebody else's text node. The message says so where the reader is looking,
+    // and the answer is a single expression -- `<p>{"hello " + name}</p>`.
+    Name(props: object) = "ed"
+
+    Greeting(props: object) = <p>hello <Name/></p>
+
+    val host = pageHost([tag("p", {}, [words("hello ed")])])
+    val said = fell(() -> hydrate(<Greeting/>, host))
+
+    assert(contains(said, "at page > 0 > 0"))
+    assert(contains(said, "wants the text \"hello \""))
+    assert(contains(said, "has the text \"hello ed\""))
+    assert(contains(said, "beside a component that renders text"))
+
+@test
+A_TEXT_MISMATCH_THAT_IS_NOT_A_JOINED_RUN_SAYS_NOTHING_ABOUT_ONE()
+    // **The hint is for the case it is about and no other.** A server that rendered different words
+    // is an ordinary mismatch, and pointing its reader at text children in a row would send them
+    // looking for something that is not there.
+    val host = pageHost([tag("p", { class: "a" }, [words("goodbye"), tag("b", {}, [words("there")])])])
+    val said = fell(() -> hydrate(<Same/>, host))
+
+    assert(!contains(said, "beside a component"))
+
+@test
+AN_EMPTY_TEXT_CHILD_MAKES_NO_NODE_AT_ALL()
+    // One node made -- the `<p>` -- and nothing put inside it, because there is nothing to put.
+    val host = pageHost([])
+    val root = mount(<Empty/>, host)
+
+    assertEq(host.seen.made, 1)
+    assertEq(host.seen.put, 0)
+    assertEq(html(root), "<p></p>")
+
+@test
+AN_EMPTY_TEXT_CHILD_HYDRATES_AGAINST_MARKUP_WITH_NOTHING_IN_IT()
+    // **The second defect this closes.** `<p>{""}</p>` serialises to `<p></p>`, so a tree wanting a
+    // text node there faulted with *the page has nothing -- the markup ran out*.
+    val host = pageHost([tag("p", {}, [])])
+
+    hydrate(<Empty/>, host)
+
+    assertEq(host.seen.made, 0)
+    assertEq(host.seen.put, 0)
+    assertEq(host.seen.text, 0)
+
+@test
+TEXT_THAT_STOPS_BEING_EMPTY_ARRIVES_AS_A_NODE_AND_LEAVES_AGAIN_WHEN_IT_GOES()
+    // **A text child holds a node exactly while there is text in it**, which is the other half of
+    // the rule above: the node is made on the render that fills it and given back on the render that
+    // empties it, and the ordinary child diff puts it in and takes it out.
+    var setter = null
+
+    Note(props: object) =
+        val [said, setSaid] = useState("")
+
+        setter = setSaid
+
+        <p>{said}</p>
+
+    val host = pageHost([tag("p", {}, [])])
+    val root = hydrate(<Note/>, host)
+
+    assertEq(host.seen.made, 0)
+
+    setter("hi")
+    flush(root)
+
+    assertEq(host.seen.made, 1)
+    assertEq(host.seen.put, 1)
+    assertEq(host.serialise([host.adopt(null, 0).node]), "<p>hi</p>")
+
+    setter("")
+    flush(root)
+
+    assertEq(host.seen.took, 1)
+    assertEq(host.serialise([host.adopt(null, 0).node]), "<p></p>")
+
+// -- a mismatch is not a render fault -------------------------------------------------------------
+
+@test
+A_BOUNDARY_DOES_NOT_CATCH_A_HYDRATION_MISMATCH()
+    // **A mismatch is a fault in the FRAMEWORK's contract with the server and not in a component**,
+    // so it goes past every boundary above it. A boundary that caught one would render its fallback
+    // into markup that is not the fallback's -- and the second fault names the fallback's own tree,
+    // burying the sentence that said which element actually disagreed. That is a day of looking in
+    // the wrong place, and it is why this test exists.
+    var shown = false
+
+    Broken(props: object) = <p>x</p>
+
+    fallback(e) =
+        shown = true
+
+        <em>caught</em>
+
+    App(props: object) =
+        <div><Boundary fallback={fallback}><Broken/></Boundary></div>
+
+    val host = pageHost([tag("div", {}, [tag("span", {}, [words("x")])])])
+    val said = fell(() -> hydrate(<App/>, host))
+
+    assert(contains(said, "at page > 0 > 0"))
+    assert(contains(said, "the tree wants <p>"))
+    assert(contains(said, "the page has <span>"))
+    assertEq(shown, false)
+
+@test
+A_RENDER_FAULT_UNDER_A_BOUNDARY_IS_STILL_CAUGHT_WHILE_HYDRATING()
+    // **The control, and it is what says the rule above is about mismatches and not about boundaries
+    // during hydration.** A component that cannot render is exactly what a boundary is for, and a
+    // server whose render faulted the same way sent the fallback's markup -- which the fallback then
+    // adopts like any other tree.
+    Boom(props: object)
+        throw "gone"
+
+    App(props: object) =
+        <div><Boundary fallback={(e) -> <p class="broken">{e.message}</p>}><Boom/></Boundary></div>
+
+    val host = pageHost([tag("div", {}, [tag("p", { class: "broken" }, [words("gone")])])])
+
+    hydrate(<App/>, host)
+
+    assertEq(host.seen.made, 0)
+    assertEq(host.seen.wrote, 0)
+
+@test
+A_MISMATCH_SOMEBODY_CAUGHT_DOES_NOT_MAKE_THE_NEXT_FAULT_UNCATCHABLE()
+    // **The flag that carries a mismatch past a boundary is cleared where a render BEGINS**, not
+    // where the fault is caught -- so a program that caught one itself, as the test above does,
+    // leaves nothing behind. Without this the next ordinary render fault would walk past the
+    // boundary written for it, and it would do so in whatever unrelated code ran next.
+    fell(() -> hydrate(<Same/>, pageHost([tag("div", {}, [])])))
+
+    Boom(props: object)
+        throw "gone"
+
+    App(props: object) =
+        <div><Boundary fallback={(e) -> <p>{e.message}</p>}><Boom/></Boundary></div>
+
+    assertEq(html(mount(<App/>)), "<div><p>gone</p></div>")
+
+@test
+AN_EMPTY_TEXT_CHILD_BETWEEN_TWO_ELEMENTS_MOVES_NO_INDEX()
+    // **The cursor counts what the page holds and not what the tree wrote**, which is the edge the
+    // rule above has to survive: an empty text child claims nothing, so the element after it is the
+    // NEXT child of the parent and not the one after that.
+    Mixed(props: object) = <p><b>x</b>{""}<i>y</i></p>
+
+    val host = pageHost([tag("p", {}, [tag("b", {}, [words("x")]), tag("i", {}, [words("y")])])])
+
+    hydrate(<Mixed/>, host)
+
+    assertEq(host.seen.made, 0)
+    assertEq(host.seen.put, 0)
+    assertEq(host.seen.took, 0)
+
+@test
+A_RUN_OF_TEXT_BETWEEN_ELEMENTS_IS_ONE_CHILD_AND_THE_ELEMENTS_KEEP_THEIR_PLACES()
+    // Two runs and one element between them: three children in the page, and the tree counts three.
+    Between(props: object) = <p>{1}{2}<b>x</b>{3}{4}</p>
+
+    val host = pageHost([tag("p", {},
+        [words("12"), tag("b", {}, [words("x")]), words("34")])])
+
+    hydrate(<Between/>, host)
+
+    assertEq(host.seen.made, 0)
+    assertEq(host.seen.text, 0)
+    assertEq(host.seen.put, 0)

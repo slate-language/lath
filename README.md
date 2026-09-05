@@ -329,9 +329,35 @@ them.
 would hide a server and a client that disagree — which is the one defect hydration exists to expose —
 and it would hide it behind a page that looks right.
 
+**A `Boundary` does not catch a mismatch.** It is a fault in the framework's contract with the server
+rather than a component failing to render, so it goes past every boundary above it. A boundary that
+caught one would render its fallback into markup that is not the fallback's — and the fault that
+escaped would then name the *fallback's* tree, burying the sentence that said which element actually
+disagreed.
+
 **A string host refuses to hydrate** rather than answering nothing: a server renders the markup a page
 adopts and never adopts anything itself, and a silent `null` there would turn `hydrate` into `mount`
 without saying so.
+
+### Text, which is the one thing markup cannot say back
+
+Two rules make a tree walkable back out of the markup it wrote, and both are settled in the tree
+rather than in the markup — so `html()` is exactly the string it always was, with nothing in it a
+component did not ask for.
+
+**Two text children in a row are one text child.** `<h2>{n} replies</h2>` writes `<h2>2 replies</h2>`
+and a parser reads one text node back, so lath joins the run before it makes an instance. React
+writes a `<!-- -->` between them and reads it back as the seam; that answer would put markup nobody
+asked for in every server render, and `slate:dom` cannot tell a comment from a text node anyway.
+
+**An empty text child is no node at all.** `<p>{""}</p>` writes `<p></p>` — there is nothing for an
+empty string to write — so the tree holds nothing for it either, and the node arrives the moment the
+text does and goes again when it goes.
+
+**The one pair that cannot be joined is a text child beside a component that renders text.**
+`<p>hello <Name/></p>` is two instances with two nodes and one text node in the page, and it is a
+mismatch that says so in as many words. Write the run as one expression — `<p>{"hello " + name}</p>`
+— or put the component's text in an element of its own.
 
 ## The host is behind an adapter, and there are two of them
 
@@ -462,6 +488,10 @@ component. **`insertBefore` and `removeChild` on `slate:dom`** are what let the 
 reconciler's operations as operations: reordering three rows of a thousand was three correct
 decisions and one `replaceChildren` of a thousand nodes until 0.0.30, and is now six mutation records
 and nothing for the rows that stayed.
+
+**0.5.1 changes nothing about `Host`**, and the one thing a host of your own may notice is that
+`text("")` is never called any more: an empty text child stands for no node, in every host, so a host
+that had special-cased one can stop.
 
 **`Host` grew a tenth function in 0.5.0**, `styles(sheets)`, which is the one change a host of your
 own has to make. It is handed the whole list of distinct stylesheets whenever that list grows, and it

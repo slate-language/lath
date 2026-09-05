@@ -82,6 +82,15 @@ export domHost(into: string) -> Host =
     // a handler replaced by a new closure has to be detached or the old one fires too.
     setProps(node: integer, props: object) =
         val key = string(node)
+
+        // **Whether this host has ever written to this node**, which is the one thing that tells a
+        // node adopted from the page apart from one this host created. It is what `value` and
+        // `checked` are compared on the strength of below.
+        //
+        // **`?? null` and not a bare comparison**: a field that was never there reads `undefined`,
+        // which is not `null` to slate, and a node this host has dropped reads the `null` that
+        // `drop` wrote. The two mean the same thing here and `??` is what makes them one answer.
+        val first = (attrs[key] ?? null) == null
         val had = attrs[key] ?? []
         var now = []
 
@@ -98,14 +107,23 @@ export domHost(into: string) -> Host =
             // difference shows: the attribute says what the field started as and the property says
             // what it holds now, so a re-render setting the attribute would leave a typed-in field
             // alone and the page would appear frozen.
+            //
+            // **THE FIRST WRITE TO A NODE IS THE ONE THAT COMPARES, AND ONLY THE FIRST.** A page
+            // parsed from markup has the property the attribute gave it -- nobody has typed yet --
+            // so on a node this host has not written to before, an attribute that already says what
+            // is about to be set means the write is not needed. On a `hidden` input, and on every
+            // other field whose `value` reflects to the content attribute, that write is a mutation
+            // an observer records, which is the whole of the defect this closes. Afterwards the
+            // property is set unconditionally, exactly as it was: past the first render the
+            // attribute no longer says what the field holds, and skipping would leave a controlled
+            // input showing something the tree does not.
             if name == "value" || name == "checked"
-                setProperty(node, name, value)
-            elif attribute(node, name) != value
+                if !first || attribute(node, name) != pageValue(value) then setProperty(node, name, value)
+            elif attribute(node, name) != pageValue(value)
                 // **Comparing before setting is what makes a hydrated page make no mutations at
                 // all**, and it is worth having on every render and not only the first: an attribute
                 // written to the value it already holds is a mutation observers see, styles
-                // recompute for, and a screen reader announces. `attribute` answers `true` for a bare
-                // attribute, which is exactly what `setAttribute` writes for one, so the two agree.
+                // recompute for, and a screen reader announces.
                 setAttribute(node, name, value)
 
         for name in had
@@ -349,6 +367,23 @@ listen(hands: object, node: integer, name: string, f) =
 
 isHandler(name: string) -> boolean =
     name.len() > 2 && name[0..<2] == "on" && name[2] == name[2].upper()
+
+// What the page would answer for an attribute set to this value, which is the thing a comparison
+// before writing has to be made against.
+//
+// **AN ATTRIBUTE IS TEXT, ALWAYS, AND THAT IS THE WHOLE OF THIS FUNCTION.** `rows={5}` is the
+// ordinary way to write one; `setAttribute` writes `"5"` and the page answers `"5"`, so comparing
+// the number 5 against it says they differ and rewrites an attribute that was already right -- which
+// is a mutation an observer records, on the hydrating render and on every one after it.
+//
+// **`true` reads back as `true`, and so does an empty string.** `setAttribute` writes the empty
+// string for a bare attribute and `attribute` reads the empty string back as `true`, so those two
+// are one value here. A `null` or a `false` is no attribute at all, which is what `null` says.
+pageValue(value) =
+    if value == null || value == false || value == undefined then return null
+    if value == true || value == "" then return true
+
+    string(value)
 
 // -- the address bar ------------------------------------------------------------------------------
 

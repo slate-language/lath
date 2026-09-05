@@ -1,5 +1,7 @@
-import { createElement, Fragment, mount, hydrate, html, stringHost, useState } from "../lath.slx"
+import { createElement, Fragment, mount, hydrate, html, flush, stringHost, useState,
+    Boundary } from "../lath.slx"
 import { domHost } from "../dom.slx"
+import { attribute, byId } from slate:dom
 import { at, click, says, shown, mutations } from "./probe.slx"
 
 // Hydration against a real document, measured by a `MutationObserver`.
@@ -123,3 +125,197 @@ A_STRING_HOST_STILL_REFUSES_TO_HYDRATE_EVEN_WHERE_THERE_IS_A_DOCUMENT()
     // run in a page does not change that.
     assert(contains(fell(() -> hydrate(<App/>, stringHost())),
         "a string host has nothing to hydrate"))
+
+// -- what the markup cannot say, and what must not be written again -------------------------------
+
+// **These four were found by a real application and reduced to the smallest program each one is.**
+// All four are one thing said four ways: the markup a server writes has to be walkable back into the
+// tree that wrote it. Two of them were not -- a seam between two text children and an empty text
+// child both disappear into the markup -- and two were written again on the way in for nothing.
+//
+// **The measurement is the observer and not a count of what lath asked for**, which is what makes
+// the last two answerable at all: setting a property is not a call the framework could have counted
+// as a mutation, and on a field whose value reflects to its content attribute the browser records
+// one.
+
+// How many mutation records the browser made while a component hydrated against its own markup.
+async records(P) -> integer
+    at(html(mount(P({}), stringHost())))
+
+    await sleep(1)
+
+    val before = mutations()
+
+    hydrate(<P/>, domHost("#page"))
+
+    await sleep(1)
+
+    mutations() - before
+
+Adjacent(props: object) = <h2>{2} replies</h2>
+
+Blank(props: object) = <p>{""}</p>
+
+Valued(props: object) = <input type="hidden" name="token" value="a-token"/>
+
+Rowed(props: object) = <textarea id="notes" rows={5}></textarea>
+
+Plain(props: object) = <p class="said">nothing to do here</p>
+
+@test
+async TWO_TEXT_CHILDREN_IN_A_ROW_HYDRATE_AGAINST_THE_ONE_NODE_A_PARSER_MADE()
+    // `<h2>{2} replies</h2>` is `<h2>2 replies</h2>` in the markup and ONE text node in the page,
+    // whatever the tree that wrote it was made of. lath joins the run before it makes an instance,
+    // so the two sides count the same children -- and the page is not touched.
+    assertEq(await records(Adjacent), 0)
+
+    assertEq(shown(), "<div id=\"page\"><h2>2 replies</h2></div>")
+
+@test
+async AN_EMPTY_TEXT_CHILD_HYDRATES_AGAINST_MARKUP_WITH_NOTHING_IN_IT()
+    // `<p>{""}</p>` writes `<p></p>` -- there is nothing for an empty string to write -- so the tree
+    // holds no node for it either.
+    assertEq(await records(Blank), 0)
+
+@test
+async A_VALUE_ALREADY_ON_THE_PAGE_IS_NOT_WRITTEN_AGAIN()
+    // **`value` is a PROPERTY and not an attribute**, which is what keeps a re-render from freezing a
+    // field somebody is typing in -- and the property write used to happen with no comparison at all.
+    // On a `hidden` input the property reflects to the content attribute, so the page recorded a
+    // change to the value it already held; on a field being typed in, hydration would have taken what
+    // was typed.
+    assertEq(await records(Valued), 0)
+
+@test
+async A_NUMERIC_ATTRIBUTE_IS_COMPARED_AS_THE_TEXT_IT_IS_ON_THE_PAGE()
+    // An attribute is text, always. `rows={5}` is the ordinary way to write one and the page answers
+    // `"5"`, so a comparison that asked whether the number 5 was the string "5" rewrote an attribute
+    // that was already right.
+    assertEq(await records(Rowed), 0)
+
+@test
+async A_PAGE_WITH_NONE_OF_THEM_ON_IT_RECORDS_NOTHING_EITHER()
+    // **The control for all four**, and it is what says the measurement is of these and not of
+    // hydration in general.
+    assertEq(await records(Plain), 0)
+
+@test
+async A_MOUNT_OF_THE_SAME_FOUR_RECORDS_PLENTY()
+    // **The other control**, and it is the way a measurement of "nothing happened" fails: without it
+    // every zero above could be a zero because nothing ran.
+    at(html(mount(<Valued/>, stringHost())))
+
+    await sleep(1)
+
+    val before = mutations()
+
+    mount(<Valued/>, domHost("#page"))
+
+    await sleep(1)
+
+    assert(mutations() - before > 0)
+
+@test
+async AN_ATTRIBUTE_THE_SERVER_GOT_WRONG_IS_STILL_THE_ONE_THING_A_HYDRATION_WRITES()
+    // **A stale value is not a mismatched TREE**: the shape is right and one value is out of date, so
+    // the render corrects it rather than refusing -- which is the line between the two, and is what
+    // says the comparison above is a comparison and not a decision to leave attributes alone.
+    at("<textarea id=\"notes\" rows=\"4\"></textarea>")
+
+    await sleep(1)
+
+    val before = mutations()
+
+    hydrate(<Rowed/>, domHost("#page"))
+
+    await sleep(1)
+
+    assertEq(mutations() - before, 1)
+    assertEq(attribute(byId("notes"), "rows"), "5")
+
+@test
+async A_FIELD_IS_STILL_WRITTEN_ON_EVERY_RENDER_AFTER_THE_FIRST()
+    // **The comparison is the FIRST write to a node and no other**, which is the whole of why this
+    // test is here. A page parsed from markup has the property its attribute gave it and nobody has
+    // typed yet; afterwards the attribute no longer says what the field holds, so a render that
+    // skipped would leave a controlled input showing something the tree does not.
+    var setter = null
+
+    Field(props: object) =
+        val [token, setToken] = useState("a-token")
+
+        setter = setToken
+
+        <input id="token" type="hidden" name="token" value={token}/>
+
+    at(html(mount(<Field/>, stringHost())))
+
+    await sleep(1)
+
+    val root = hydrate(<Field/>, domHost("#page"))
+
+    setter("b-token")
+    flush(root)
+
+    await sleep(1)
+
+    assertEq(attribute(byId("token"), "value"), "b-token")
+
+@test
+async TEXT_THAT_STOPS_BEING_EMPTY_ARRIVES_AS_A_NODE_ON_THE_PAGE()
+    // The other half of the empty text child: it holds no node while it is empty and takes one the
+    // moment it is not, put where it goes by the ordinary child diff.
+    var setter = null
+
+    Note(props: object) =
+        val [said, setSaid] = useState("")
+
+        setter = setSaid
+
+        <p>{said}</p>
+
+    at(html(mount(<Note/>, stringHost())))
+
+    val root = hydrate(<Note/>, domHost("#page"))
+
+    assertEq(shown(), "<div id=\"page\"><p></p></div>")
+
+    setter("hi")
+    flush(root)
+
+    assertEq(shown(), "<div id=\"page\"><p>hi</p></div>")
+
+    setter("")
+    flush(root)
+
+    assertEq(shown(), "<div id=\"page\"><p></p></div>")
+
+@test
+A_BOUNDARY_DOES_NOT_CATCH_A_HYDRATION_MISMATCH()
+    // **A mismatch is a fault in the contract with the server and not in a component**, so it goes
+    // past every boundary above it. A boundary that caught one would render its fallback into markup
+    // that is not the fallback's, and the escaping fault would name the FALLBACK's tree -- so the
+    // sentence saying which element actually disagreed is gone. That cost an application a day.
+    var shownFallback = false
+
+    fallback(e) =
+        shownFallback = true
+
+        <em>caught</em>
+
+    Broken(props: object) = <p>x</p>
+
+    Guarded(props: object) =
+        <div><Boundary fallback={fallback}><Broken/></Boundary></div>
+
+    at("<div><span>x</span></div>")
+
+    val said = fell(() -> hydrate(<Guarded/>, domHost("#page")))
+
+    assert(contains(said, "#page > 0 > 0"))
+    assert(contains(said, "wants <p>"))
+    assert(contains(said, "has <span>"))
+    assertEq(shownFallback, false)
+
+    // And the page is exactly as it was: nothing was half-rebuilt on the way out.
+    assertEq(shown(), "<div id=\"page\"><div><span>x</span></div></div>")

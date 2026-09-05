@@ -247,6 +247,22 @@ instance(root: object, parent, el, kind: string) -> object =
 //
 // **`null`, `undefined` and the two booleans render nothing**, which is what makes `{cond && <a/>}`
 // the ordinary way to write a conditional child.
+//
+// **TWO TEXT CHILDREN IN A ROW BECOME ONE, AND THAT IS WHAT MAKES `<h2>{n} replies</h2>` HYDRATE.**
+// Markup has no way to say where one text child ended and the next began -- `<h2>2 replies</h2>` is
+// what both of them serialise to, and a parser answers ONE text node for it. A tree holding two
+// would ask the page for a node it has not got, so the framework holds one as well: the run is
+// joined here, before a single instance is made, and both hosts see the same child list.
+//
+// **React writes a `<!-- -->` between them instead and reads it back as the seam. That answer is not
+// available here and would be the worse one anyway.** `slate:dom` cannot tell a comment from a text
+// node -- `tagName` answers `null` for both and `nodeText` answers a comment's own data -- so a
+// hydrating walk could not consume the separator it had written; and every `html()` string would
+// carry markup no server asked for. Joining the run keeps `html()` byte for byte what it was.
+//
+// **What this cannot join is a text child next to a COMPONENT that renders text**, the two standing
+// in different instances -- `<p>hello <Name/></p>` is still a mismatch, and `claimText` says so in
+// as many words.
 flatten(kids: array, out: array) -> array =
     for kid in kids
         if kid == null || kid == undefined || kid == true || kid == false
@@ -254,10 +270,16 @@ flatten(kids: array, out: array) -> array =
 
         if kid is array
             flatten(kid, out)
+        elif isText(kid) && out.len() > 0 && isText(out[out.len() - 1])
+            push(out, string(pop(out)) + string(kid))
         else
             push(out, kid)
 
     out
+
+// Whether a child is text rather than an element: a string or a number, which is what `kindOf`
+// answers `"text"` for.
+isText(kid) -> boolean = kid is string || kid is number
 
 kindOf(el) -> string =
     if el is string || el is number then "text"
@@ -307,7 +329,7 @@ build(root: object, parent, el) -> object =
     val inst = instance(root, parent, el, kind)
 
     if kind == "text"
-        inst.node = if root.claim == null then root.host.text(string(el)) else claimText(root, string(el))
+        inst.node = textNode(root, string(el))
 
         return inst
 
@@ -319,6 +341,23 @@ build(root: object, parent, el) -> object =
     update(inst)
 
     inst
+
+// The node a text child stands on: made, adopted from the page, or NONE where the text is empty.
+//
+// **AN EMPTY TEXT CHILD HOLDS NO NODE AT ALL, WHICH IS THE ONLY ANSWER BOTH HOSTS CAN GIVE.**
+// `<p>{""}</p>` serialises to `<p></p>` -- there is nothing for an empty string to write -- so a
+// page parsed from that markup has no text node, and a tree that had made one would ask for a node
+// the page has not got. It is the same fact adjacent text runs into, said the other way round: the
+// markup is what both sides have to agree about, and the markup has nothing in it.
+//
+// **The node arrives the moment the text does.** `update` makes one when the string stops being
+// empty and gives it back when it becomes empty again, so a child list holds a text node exactly
+// while there is text in it -- and the reconciler's diff, which is told what the children now ARE,
+// puts it in and takes it out with no special case of its own.
+textNode(root: object, s: string) =
+    if s == "" then return null
+
+    if root.claim == null then root.host.text(s) else claimText(root, s)
 
 // -- hydration -------------------------------------------------------------------------------
 
@@ -349,11 +388,27 @@ claimText(root: object, want: string) =
 
     if found.tag != null then mismatch(root, "the text " + toJSON(want), "<" + found.tag + ">")
     if found.text != want
-        mismatch(root, "the text " + toJSON(want), "the text " + toJSON(found.text))
+        mismatch(root, "the text " + toJSON(want),
+            "the text " + toJSON(found.text) + runOn(want, found.text))
 
     pop(root.trail)
 
     found.node
+
+// The one text mismatch worth explaining rather than reporting, said where the reader is looking.
+//
+// **A page holding the text the tree wanted AND MORE is a run of text a parser joined**, which is
+// the one thing markup cannot say: two text children in a row serialise to one string and come back
+// as one node. `flatten` joins such a run before an instance is made, so the pair that reaches here
+// is the pair it cannot join -- a text child standing beside a component that renders text, the two
+// living in different instances. The answer is a single expression: `<p>{"hello " + name}</p>`.
+runOn(want: string, found: string) -> string =
+    if want == "" || found.len() <= want.len() || found[0..<want.len()] != want then return ""
+
+    // **The brackets are what continue the line**, a trailing `+` outside a bracket pair not being a
+    // continuation in slate.
+    (" -- a parser reads two text children in a row as ONE text node, and the pair lath cannot join" +
+        " for you is a text child beside a component that renders text")
 
 // **This one does NOT pop the trail and the text one does**, which is the whole of how a path reads
 // `page > 0 > 1`: an element's own index has to stay on the trail while its children are walked, and
@@ -367,10 +422,27 @@ claimElement(root: object, tag: string) =
 
     found.node
 
+// Whether the fault now travelling is a hydration mismatch.
+//
+// **A MISMATCH IS NOT A RENDER FAULT AND A `Boundary` MUST NOT CATCH IT**, which is what this flag
+// is for and is the whole of why it exists. A boundary is for a component that could not render --
+// something a program can show a fallback for and carry on from. A page that does not match the
+// markup it was sent is a fault in the FRAMEWORK's contract with the server, and a boundary that
+// caught one would then render its fallback into markup that is not the fallback's: the second
+// fault names the fallback's own tree, and the first one -- the one that says which element
+// disagreed -- is gone. That is a day of looking in the wrong place, and it happened.
+//
+// **It is cleared where a render begins rather than where the fault is caught**, so that a program
+// which catches a mismatch itself, as a test does, leaves nothing behind to make an ordinary render
+// fault uncatchable later.
+var mismatching = false
+
 // **A MISMATCH IS A FAULT AND THERE IS NO FALLING BACK TO A CLIENT RENDER.** A page that quietly
 // rebuilt what it could not adopt would hide a server and a client that disagree -- which is the one
 // defect hydration exists to expose -- and it would hide it behind a page that looks right.
 mismatch(root: object, wanted: string, found: string) =
+    mismatching = true
+
     // **The brackets are what continue the line**, a trailing `+` outside a bracket pair not being a
     // continuation in slate.
     throw ("the page does not match what was rendered: at " + where(root) +
@@ -388,7 +460,22 @@ where(root: object) -> string =
 
 update(inst: object) =
     if inst.kind == "text"
-        inst.root.host.setText(inst.node, string(inst.el))
+        val s = string(inst.el)
+
+        // **Text that has become empty gives its node back**, and text that has stopped being empty
+        // takes a new one. That is what keeps the tree and the markup agreeing about a child a
+        // server never wrote: an empty text child stands for no node in either host. The node goes
+        // on the queue rather than to the host on the spot, exactly as an unmounted one does -- it
+        // is still in its parent, and the parent's own `holdKids` is what takes it out.
+        if s == ""
+            if inst.node != null
+                push(inst.root.dropped, inst.node)
+
+                inst.node = null
+        elif inst.node == null
+            inst.node = inst.root.host.text(s)
+        else
+            inst.root.host.setText(inst.node, s)
 
         return null
 
@@ -523,6 +610,12 @@ holdKids(inst: object, write: boolean) =
 // fallback with the fault object in its hands. Nothing is swallowed: the value reaches the fallback,
 // which is an ordinary component and may show it, log it or send it somewhere.
 recoverAt(inst, e) -> boolean =
+    // **A hydration mismatch goes straight past every boundary.** It is not a component failing to
+    // render -- it is the page disagreeing with the markup it was sent -- and a fallback rendered
+    // into that page would fault again on markup that is not the fallback's, burying the sentence
+    // that named the element which actually disagreed.
+    if mismatching then throw e
+
     var at = inst
 
     while at != null
@@ -613,6 +706,11 @@ contains(xs: array, v) -> boolean =
 // **A component and a fragment have no node of their own**, so they answer with their children's --
 // which is what lets a component return several things without a tag around them.
 nodesOf(inst: object) -> array =
+    // **An empty text child stands for NO node**, which is the one instance that answers nothing
+    // without being a portal: there is no such thing as an empty text node in markup, so there is
+    // none in the tree either.
+    if inst.kind == "text" && inst.node == null then return []
+
     if inst.kind == "text" || inst.kind == "host" then return [inst.node]
 
     // **A portal answers NONE**, its children standing in a container of its own.
@@ -721,7 +819,12 @@ export hydrate(el, host = null) -> object =
 
     root
 
+// **Every root starts with no mismatch travelling**, which is where that flag is cleared: a program
+// that caught one itself -- a test, or a page that means to report it -- would otherwise leave it
+// set, and the next ordinary render fault would walk past the boundary that was written for it.
 newRoot(host) -> object =
+    mismatching = false
+
     { host: host, inst: null, pending: [], effects: [], scheduled: false, claim: null, trail: [],
       nodes: [], dropped: [], sheets: [], styled: [] }
 

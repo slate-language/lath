@@ -123,3 +123,33 @@ AN_ATTRIBUTE_VALUE_IS_ESCAPED_TOO()
 @test
 a_number_child_is_text()
     assert(html(mount(<p>{42}</p>)) == "<p>42</p>")
+
+@test
+TWO_TEXT_CHILDREN_IN_A_ROW_ARE_ONE_RUN_OF_TEXT_AND_THE_MARKUP_IS_UNCHANGED()
+    // **The markup a run of text children writes is what it always wrote**, which is the decision
+    // taken here rather than a fact about the serialiser: React writes a `<!-- -->` between two text
+    // children so that a hydrating walk can find the seam, and lath joins the two children instead --
+    // so `html()` stays one string a browser parses into exactly the nodes the tree holds, with no
+    // markup in it that no component asked for.
+    assert(html(mount(<h2>{2} replies</h2>)) == "<h2>2 replies</h2>")
+
+    // A run is joined however many pieces it is in, and whatever they are made of.
+    assert(html(mount(<p>{1}{2}{"c"}</p>)) == "<p>12c</p>")
+
+    // **A child that renders nothing does not break a run**, which is the case `{cond && "x"}` makes
+    // ordinary: `null` is dropped before the two sides of it are joined, and the markup says so.
+    assert(html(mount(<p>{"a"}{null}{"b"}</p>)) == "<p>ab</p>")
+
+@test
+AN_EMPTY_TEXT_CHILD_WRITES_NOTHING_AND_IS_NOTHING()
+    // **There is no such thing as an empty text node in markup**, so a tree that made one would want
+    // a node from the page that the page cannot have. `<p>{""}</p>` is an empty `<p>` on both sides.
+    assert(html(mount(<p>{""}</p>)) == "<p></p>")
+    assert(html(mount(<p>{""}{"a"}{""}</p>)) == "<p>a</p>")
+
+@test
+A_TREE_THAT_IS_NOTHING_BUT_AN_EMPTY_TEXT_CHILD_IS_NO_NODES_AT_ALL()
+    // **The top of the tree is where an instance answering no nodes has to be harmless**, there being
+    // no host node above it: the root's own list is what the host is handed, and an empty text child
+    // contributes nothing to it.
+    assert(html(mount(<>{""}</>)) == "")
