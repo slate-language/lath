@@ -4,7 +4,7 @@ A React-shaped UI framework, written in [slate](https://github.com/slate-languag
 
 A component is a function of its props, state lives in hooks kept on call-order slots, and a change
 re-renders the component that owns it while the reconciler matches the new children against the old
-by key. That is React's model **and** React's mechanism.
+by key and moves them into place. That is React's model **and** React's mechanism.
 
 The name is the strip a roof's slates are nailed to — the frame the pieces hang on.
 
@@ -47,6 +47,10 @@ the line that is wrong is the one in your own program.
 |---|---|
 | `createElement`, `Fragment` | what slx desugars into |
 | `useState`, `useReducer`, `useRef`, `useMemo`, `useCallback`, `useEffect` | hooks |
+| `createContext(default)`, `useContext(ctx)` | a value handed to a whole subtree |
+| `memo(Component, areEqual)` | a component that is not rendered again while its props are the same |
+| `Boundary` | a component that renders a fallback when its subtree faults |
+| `createPortal(element, node)` | a subtree rendered into a container somewhere else |
 | `mount(element, host)` | render, and keep the tree so it can render again |
 | `hydrate(element, host)` | the same render, adopting the markup already on the page |
 | `flush(root)` | render every change since the last one, now |
@@ -111,7 +115,7 @@ come with it: a repeated name is the last one, and a bare `?debug` is present an
 **The path is handed in and never read from the world.** That is the whole design: `req.path` on a
 server and `usePath()` in a page, and the router itself knows about neither — which is what lets one
 set of routes render in both places. `tests/server.slx` renders them through `slate:http` and
-`check/routed.slx` renders the same ones into a document.
+`tests-dom/router.slx` renders the same ones into a document.
 
 **Nothing matching is a fault** unless a `"*"` route says otherwise. A router that quietly rendered
 nothing would send the reader to look at the view, and the mistake is a missing route.
@@ -131,6 +135,74 @@ mount(<App/>, domHost("#app"))
 **No nested routes in this version.** A nested router is a component that renders a router, which
 needs nothing from here.
 
+## Context, memo, boundaries and portals
+
+**A context hands a value to a whole subtree without threading a prop through everything in
+between.** The provider is a field of the context rather than a second name to import, which is
+React's arrangement and works here because a dot inside a tag is an ordinary field selection.
+
+```
+import { createContext, useContext } from lath
+
+val Theme = createContext("light")
+
+App(props) = <Theme.Provider value="dark"><Page/></Theme.Provider>
+
+Heading(props) = <h1 class={useContext(Theme)}>{props.children}</h1>
+```
+
+A consumer with no provider above it gets the context's default rather than a fault, so a component
+that reads a theme can be rendered on its own. **`useContext` keeps no hook slot**, so unlike
+`useState` it may be called inside a condition.
+
+**`memo` is the one place the framework does not render.**
+
+```
+val Row = memo(row)
+val Row = memo(row, (was, now) -> was.id == now.id)
+```
+
+Props are compared with slate's `==`, which is **structural** where React's default is field-by-field
+identity — the same divergence the dependency lists have, and it means an options object rebuilt
+with the same fields is not a change. A handler written as a fresh lambda every render still is one,
+a function comparing by identity; `useCallback` is what that is for, there as here. **A provider that
+changes value renders through every memo below it**, which is a deliberate pessimism: tracking which
+subtree reads which context is a great deal of machinery to avoid a render on the one turn a
+provider actually changed.
+
+**A render fault stays a fault, and `Boundary` catches one.**
+
+```
+<Boundary fallback={(e) -> <p class="broken">{e.message}</p>}>
+    <Page/>
+</Boundary>
+```
+
+slate has [two failure channels](https://github.com/slate-language/slate/blob/dev/docs/reference/faults.md)
+and they decide this rather than React does: a result is for a condition the caller was always going
+to deal with, and a component that cannot render is a defect in the program. So no component is
+handed an `{ ok: false }` to inspect — the fault unwinds to the nearest boundary exactly as it would
+unwind to a `try`, which is what a boundary is. **Nothing is swallowed**: the failed subtree is
+unmounted and `fallback` is called with the fault object, `message`, `line` and `file` and all.
+
+**A boundary does not catch its own render**, which is React's rule for React's reason — the fallback
+is this component's answer, and a component whose own body faults has nothing left to answer with.
+Put a boundary above it, and that one catches it.
+
+**A portal renders a subtree into a container of the host's own kind.**
+
+```
+createPortal(<Dialog/>, byId("modals"))
+```
+
+Its children are that node's children, and the parent that wrote the portal is handed none of them —
+which is what lets a dialog written inside a table row escape the row. **On a string host it renders
+into the node it was given** and `html(root)` does not show it, which is the honest answer rather
+than a fault: a portal is content put somewhere else, and `serialise` of the container is how a
+server asks what went there. Hold the container in a `useMemo` rather than looking it up on every
+render — `byId` mints a fresh handle each time, and a portal handed a different container is a
+different portal.
+
 ## Hydration
 
 `hydrate` is `mount` with the creating left out: every node it would have made, it takes from the page
@@ -143,8 +215,8 @@ import { domHost } from lath/dom
 hydrate(<App/>, domHost("#app"))
 ```
 
-**A hydrated page makes no DOM mutations at all**, and that is measured rather than asserted — the
-jsdom check watches the container with a `MutationObserver` and requires it to record nothing.
+**A hydrated page makes no DOM mutations at all**, and that is measured rather than asserted —
+`tests-dom/hydrate.slx` watches the page with a `MutationObserver` and requires it to record nothing.
 Everything that would have been created is adopted, every attribute is compared before it is written,
 and the child lists are not set at all, each child having been adopted from its parent in order.
 
@@ -168,7 +240,7 @@ without saying so.
 
 Nothing in the reconciler knows what a node is. `stringHost` builds plain objects and serialises
 them; `domHost` creates real elements through the same nine functions — `element`, `text`,
-`setProps`, `setKids`, `setText`, `serialise`, `drop`, `mounted` and `adopt`. **So one set of
+`setProps`, `setText`, `serialise`, `drop`, `mounted`, `adopt` and `patch`. **So one set of
 components renders to HTML on a server and into the document in a browser**, which is the thing that
 makes this worth writing in slate rather than reaching for React.
 
@@ -188,13 +260,23 @@ host was written rather than guessed at in advance:
 - **`drop(node)`** is a node the framework has torn down. A string host's node is an ordinary object
   the collector takes; a DOM host hands out a handle into a table it keeps, and a node nobody tells
   it about is a slot held for the life of the page.
-- **`mounted(nodes)`** is the top of the tree, handed over on **every** commit. A component at the
-  very top has no host node above it, so when it renders a different set of nodes the reconciler has
-  nobody to tell — for a string host that is invisible, `html` walking the tree afresh whenever it is
-  asked, and for a DOM host it is an element left on the page after the program stopped rendering it.
+- **`mounted(nodes)`** is the top of the tree, handed over whenever that set **changes**. A component
+  at the very top has no host node above it, so when it renders a different set of nodes the
+  reconciler has nobody to tell — for a string host that is invisible, `html` walking the tree afresh
+  whenever it is asked, and for a DOM host it is an element left on the page after the program
+  stopped rendering it. It is compared first because handing a host the same list again is a whole
+  child list replaced with itself, which an observer sees and a scroll position is lost to.
 
-`tests/host.slx` pins both against a recording host, which is how a contract with two
-implementations gets checked without a document in the room.
+**`patch(parent, ops)` is what `setKids` became**, and it is the reason a keyed reorder moves rows
+rather than rebuilding them. `ops` says what CHANGED, in order — `{ kind: "remove", node }` and
+`{ kind: "insert", node, before }`, where `before` of `null` means the end and where inserting a node
+the parent already holds MOVES it, which is what `insertBefore` does. **A host is handed the whole
+batch rather than one operation at a time**, which is the difference between the two kinds of host: a
+host that can move a single child walks the list, and one that can only write a whole child list
+applies the batch to a list of its own and writes once.
+
+`tests/host.slx` and `tests/reconcile.slx` pin all of it against a recording host, which is how a
+contract with two implementations gets checked without a document in the room.
 
 ## What a handler is given
 
@@ -245,36 +327,48 @@ host sets it as one, which is what keeps a re-render from freezing a field someb
 
 ## Running the tests
 
+**Two commands, and the second one needs a document.**
+
 ```
 slate test tests
+npm install
+NODE_OPTIONS="--import ./tests-dom/setup.mjs" slate test --js tests-dom
 ```
 
 They are written in slate and run by slate's own runner, which is how anybody using this package
 would run their own.
 
-`check/` holds two jsdom drivers, run by hand — see its README. They sit outside `tests/` because
-`slate test tests` walks everything below that directory and both are pages, which need a document;
-and they are not part of the suite because jsdom is not a dependency of this repo, and adding one
-would put `npm install` in front of the suite's one command.
+**`tests-dom/` is a separate directory because `slate test tests` walks everything below `tests/`**,
+and every file there calls `domHost`, which faults under the interpreter — so it would fail the suite
+with the very refusal that proves `slate:dom` is working. `tests-dom/setup.mjs` builds a
+[jsdom](https://github.com/jsdom/jsdom) page and installs it before the program runs, which is what
+`--import` is for.
 
-## Not here yet
-
-`useContext`, `memo`, error boundaries and portals. **The reconciler replaces a host node's whole
-child list rather than moving children**, which was right when the only host was a string and is now
-the obvious next thing: `replaceChildren` on a list of a thousand rows rebuilds the lot, where a real
-diff would move a handful. It is correct and it is not fast.
+**jsdom is a dev dependency of this repository and nothing else.** A program that *uses* lath never
+sees npm: `slate add github.com/slate-language/lath` fetches slate source, and `slate js` writes one
+self-contained file. The `package.json` here exists so that the framework's own DOM half can be
+tested against somebody else's reading of the specification rather than against a fake document
+written beside it.
 
 ## Requirements
 
-slate **0.0.28** or newer, as of lath 0.3.0, and this release is what moved it. Three things arrived
-in that one for this package: **`slate:url`**, so that the percent-coder a router needs can be
-imported by a page without dragging a whole HTTP server in with it; **`mods` and `button` on a
-handler's event record**, without which `Link` could not tell a plain click from a cmd-click; and
-**`children`, `tagName`, `nodeText` and `attribute` on `slate:dom`**, without which nothing could
-read a page at all and `hydrate` could not exist.
+slate **0.0.28** or newer, unchanged in lath 0.4.0. Three things arrived in that release for this
+package: **`slate:url`**, so that the percent-coder a router needs can be imported by a page without
+dragging a whole HTTP server in with it; **`mods` and `button` on a handler's event record**, without
+which `Link` could not tell a plain click from a cmd-click; and **`children`, `tagName`, `nodeText`
+and `attribute` on `slate:dom`**, without which nothing could read a page at all and `hydrate` could
+not exist.
 
-**`Host` is nine functions rather than eight as of 0.3.0**, which is the one breaking change: a host
-of your own needs an `adopt`, and `stringHost() with { … }` gets one that faults for free.
+**`Host`'s `setKids` became `patch` in 0.4.0**, which is the one breaking change: a host of your own
+is now told what CHANGED about a parent's children — `{ kind: "remove", node }` and
+`{ kind: "insert", node, before }`, in order — rather than being handed the whole list. It is still
+nine functions, and `stringHost() with { … }` still gets the rest for free.
+
+**What a real diff is still owed, and it is not this package's to give.** `slate:dom` can set a whole
+child list and nothing smaller, so the DOM host applies the operations to a list it keeps and writes
+that list with `replaceChildren`: reordering three rows of a thousand is three correct operations and
+one write of a thousand nodes. An `insertBefore` and a `removeChild` on `slate:dom` are the whole of
+what stands between that and a page that moves three nodes.
 
 The floor before that was 0.0.9, for the two exported types — a `type` declaration could not name one
 imported from another file before it, so `type Rendered = { el: Element }` in your own code would not

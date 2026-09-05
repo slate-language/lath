@@ -1,4 +1,5 @@
-// A counter in a web page -- the smallest thing that is a whole application.
+// A counter, a theme and a keyed list in a web page -- the smallest thing that is a whole
+// application.
 //
 // **The same components render to markup and to the document**, which is the point of the exercise:
 // nothing below mentions a page except the last two lines, and swapping `domHost("#app")` for the
@@ -8,24 +9,62 @@
 //
 //     slate js examples/web/counter.slx -o examples/web/counter.js
 
-import { createElement, Fragment, mount, useState } from "../../lath.slx"
+import { createElement, Fragment, mount, useState, useContext, createContext,
+    memo } from "../../lath.slx"
 import { domHost } from "../../dom.slx"
+
+// A value handed to a whole subtree without being passed through everything in between.
+//
+// **The provider is a field of the context**, which is React's arrangement: `<Theme.Provider>` is an
+// ordinary field selection inside a tag.
+val Theme = createContext("light")
 
 Counter({ start = 0, step = 1 }) =
     val [count, setCount] = useState(start)
 
-    <div class="counter">
+    <div class={"counter " + useContext(Theme)}>
         <p class="reading">{count}</p>
         <button onClick={() -> setCount(count + step)}>+{step}</button>
         <button onClick={() -> setCount(count - step)}>-{step}</button>
         <button class="reset" onClick={() -> setCount(start)}>reset</button>
     </div>
 
-App(props) =
-    <>
+// **A keyed row, memoised.** The key is what lets the reconciler move this row rather than rewrite
+// it when the order changes; `memo` is what stops it being rendered again when nothing about it did.
+row(props: object) = <li class="row">{props.name}</li>
+
+val Row = memo(row)
+
+// A list that can be shuffled, so that the reconciler has something to move.
+Names(props: object) =
+    val [names, setNames] = useState(["ada", "grace", "alan", "edsger"])
+
+    // The last name moved to the front, which is one move and not four.
+    rotate() =
+        var next = [names[names.len() - 1]]
+
+        for i in 0..<names.len() - 1
+            push(next, names[i])
+
+        setNames(next)
+
+    <div class="names">
+        <ul>{names.map(name -> <Row key={name} name={name}/>)}</ul>
+        <button onClick={rotate}>rotate</button>
+    </div>
+
+App(props: object) =
+    val [theme, setTheme] = useState("light")
+
+    swap() =
+        setTheme(if theme == "light" then "dark" else "light")
+
+    <Theme.Provider value={theme}>
         <h1>slate counts</h1>
+        <button class="theme" onClick={swap}>theme: {theme}</button>
         <Counter start={0} step={1}/>
         <Counter start={100} step={5}/>
-    </>
+        <Names/>
+    </Theme.Provider>
 
 mount(<App/>, domHost("#app"))
