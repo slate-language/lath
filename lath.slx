@@ -9,11 +9,13 @@
 //
 // **The host is behind an adapter, which is what lets the same components render twice.** Nothing
 // here knows what a node is: `stringHost` builds objects and serialises them, and the DOM host in `dom.slx`
-// creates real elements through the same ten functions. So a page renders to HTML on a server and to
+// creates real elements through the same nine functions. So a page renders to HTML on a server and to
 // the document in a browser from one source -- which is the thing that makes this worth writing in
 // slate rather than reaching for React.
 
 import { patchKids } from "./reconcile.slx"
+import { hostElement, hostText, hostSetProps, hostSetText, serialiseNodes, hostDrop, hostMounted,
+    hostAdopt, hostPatch } from "./markup.slx"
 
 // -- elements --------------------------------------------------------------------------------
 
@@ -935,120 +937,3 @@ export stringHost() -> Host =
     { element: hostElement, text: hostText, setProps: hostSetProps,
       setText: hostSetText, serialise: serialiseNodes, drop: hostDrop, mounted: hostMounted,
       adopt: hostAdopt, patch: hostPatch }
-
-// **A string host has nothing to hydrate, and this FAULTS rather than answering nothing.** A server
-// is the thing that renders the markup a page hydrates; it never hydrates anything itself. Answering
-// `null` here would make `hydrate` quietly fall back to building the tree, which is the failure
-// hydration exists to expose wearing a disguise.
-hostAdopt(parent, index: integer) =
-    throw "a string host has nothing to hydrate -- markup is what it produces, not what it adopts"
-
-
-// **A string host's node carries an `id`, and the diff is the whole reason.** slate compares objects
-// STRUCTURALLY, so two `<li>` elements holding the same text are one value -- and a reconciler asking
-// "where does this node stand now" would find the first of them every time and put a list of repeated
-// rows in the wrong order. A DOM node is a handle the page's own table minted and is unique already;
-// this is that guarantee, written out for the host that has no table.
-var minted = 0
-
-nextId() -> integer =
-    minted = minted + 1
-
-    minted
-
-hostElement(tag: string) -> object = { id: nextId(), tag: tag, props: {}, kids: [] }
-
-// What changed about a parent's children, applied in order.
-//
-// **A string host can move one child, so it walks the list** -- which is the half of the contract the
-// DOM host cannot demonstrate, `slate:dom` having no `insertBefore`.
-hostPatch(parent: object, ops: array) =
-    for op in ops
-        if op.kind == "remove" then hostTake(parent, op.node) else hostPut(parent, op.node, op.before)
-
-    null
-
-// **A node the parent already holds is MOVED**, which is what `insertBefore` does and is the whole of
-// how a keyed reorder is spelled: taken out of where it stood and put in where it goes.
-hostPut(parent: object, node, before) =
-    hostTake(parent, node)
-
-    val to = if before == null then null else parent.kids.indexOf(before)
-
-    if to == null then push(parent.kids, node) else insert(parent.kids, to, node)
-
-    null
-
-hostTake(parent: object, node) =
-    val at = parent.kids.indexOf(node)
-
-    if at != null then removeAt(parent.kids, at)
-
-    null
-
-// A string host's node is an ordinary object and the collector takes it; there is nothing to give
-// back. The function exists so that the adapter is one shape rather than two.
-hostDrop(node) = null
-
-// **Nothing, and that is the interesting one.** A string host has nowhere to put the tree -- the
-// tree IS the answer, and `html` walks it afresh whenever it is asked. A DOM host has built real
-// elements that are not in the page until something appends them, which is what this is for.
-hostMounted(nodes: array) = null
-
-hostText(s: string) -> object = { id: nextId(), text: s }
-
-hostSetProps(node: object, props: object) =
-    node.props = props
-
-hostSetText(node: object, s: string) =
-    node.text = s
-
-serialiseNodes(nodes: array) -> string =
-    var out = ""
-
-    for node in nodes
-        out = out + serialiseNode(node)
-
-    out
-
-serialiseNode(node: object) -> string =
-    if node.tag == undefined then return escapeText(node.text)
-
-    var out = "<" + node.tag + attributes(node.props) + ">"
-
-    if isVoid(node.tag) then return out
-
-    for kid in node.kids
-        out = out + serialiseNode(kid)
-
-    out + "</" + node.tag + ">"
-
-// **`children`, `key` and every handler are left out of the markup**, the first two being the
-// framework's own and a handler having nowhere to go in text. A `true` is a bare attribute and a
-// `false`, `null` or `undefined` is no attribute at all, which is HTML's own rule.
-attributes(props: object) -> string =
-    var out = ""
-
-    for [name, value] in entries(props)
-        if name == "children" || name == "key" then continue
-        if isHandler(name) then continue
-        if value == false || value == null || value == undefined then continue
-
-        if value == true
-            out = out + " " + name
-        else
-            out = out + " " + name + "=\"" + escapeAttr(string(value)) + "\""
-
-    out
-
-isHandler(name: string) -> boolean =
-    name.len() > 2 && name[0..<2] == "on" && name[2] == name[2].upper()
-
-isVoid(tag: string) -> boolean =
-    ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"].indexOf(tag) != null
-
-// **Text is escaped, and that is not a nicety.** A renderer that puts what it was given straight into
-// the markup hands whoever supplied the text control of the page.
-escapeText(s: string) -> string = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-escapeAttr(s: string) -> string = escapeText(s).replace("\"", "&quot;")

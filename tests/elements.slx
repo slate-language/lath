@@ -99,7 +99,9 @@ AN_UNDEFINED_CHILD_IS_REFUSED_BY_SLATE_AND_NOT_BY_THE_FRAMEWORK()
 
 @test
 an_array_of_children_is_flattened()
-    val rows = ["a", "b"].map(r -> <li>{r}</li>)
+    val names = ["a", "b"]
+
+    val rows = names.map(r -> <li>{r}</li>)
 
     assert(html(mount(<ul>{rows}</ul>)) == "<ul><li>a</li><li>b</li></ul>")
 
