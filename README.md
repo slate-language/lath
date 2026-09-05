@@ -48,6 +48,7 @@ the line that is wrong is the one in your own program.
 | `createElement`, `Fragment` | what slx desugars into |
 | `useState`, `useReducer`, `useRef`, `useMemo`, `useCallback`, `useEffect` | hooks |
 | `mount(element, host)` | render, and keep the tree so it can render again |
+| `hydrate(element, host)` | the same render, adopting the markup already on the page |
 | `flush(root)` | render every change since the last one, now |
 | `html(root)` | the tree as markup — the string host's answer |
 | `stringHost()` | the default host |
@@ -130,13 +131,56 @@ mount(<App/>, domHost("#app"))
 **No nested routes in this version.** A nested router is a component that renders a router, which
 needs nothing from here.
 
+## Hydration
+
+`hydrate` is `mount` with the creating left out: every node it would have made, it takes from the page
+instead.
+
+```
+import { createElement, Fragment, hydrate } from lath
+import { domHost } from lath/dom
+
+hydrate(<App/>, domHost("#app"))
+```
+
+**A hydrated page makes no DOM mutations at all**, and that is measured rather than asserted — the
+jsdom check watches the container with a `MutationObserver` and requires it to record nothing.
+Everything that would have been created is adopted, every attribute is compared before it is written,
+and the child lists are not set at all, each child having been adopted from its parent in order.
+
+**Handlers are attached, and that is what hydration is for.** The markup a server sent is already the
+page; what it does not have is a single event listener, and the tree this walks is what installs
+them.
+
+**Markup that does not match is a fault**, naming the path and both sides:
+
+    the page does not match what was rendered: at #app > 0 > 1 the tree wants <b> and the page has <i>
+
+**There is no falling back to a client render.** A page that quietly rebuilt what it could not adopt
+would hide a server and a client that disagree — which is the one defect hydration exists to expose —
+and it would hide it behind a page that looks right.
+
+**A string host refuses to hydrate** rather than answering nothing: a server renders the markup a page
+adopts and never adopts anything itself, and a silent `null` there would turn `hydrate` into `mount`
+without saying so.
+
 ## The host is behind an adapter, and there are two of them
 
 Nothing in the reconciler knows what a node is. `stringHost` builds plain objects and serialises
-them; `domHost` creates real elements through the same eight functions — `element`, `text`,
-`setProps`, `setKids`, `setText`, `serialise`, `drop` and `mounted`. **So one set of components
-renders to HTML on a server and into the document in a browser**, which is the thing that makes this
-worth writing in slate rather than reaching for React.
+them; `domHost` creates real elements through the same nine functions — `element`, `text`,
+`setProps`, `setKids`, `setText`, `serialise`, `drop`, `mounted` and `adopt`. **So one set of
+components renders to HTML on a server and into the document in a browser**, which is the thing that
+makes this worth writing in slate rather than reaching for React.
+
+**Three of the nine were added by writing a second implementation and then a third use**, which is
+the general lesson: an adapter with one implementation is a guess. It shipped with six.
+
+**`adopt(parent, index)` is the newest**, and it is what hydration is: *give me the child that is
+there*. It answers `{ node, tag, text }` rather than a bare node, because `lath.slx` may not import
+`slate:dom` — the host is the only thing that knows what a node is, and asking a node its tag has to
+be its question. `parent` of `null` means the host's own container, which is the one place the
+framework has no node to name. **A string host's `adopt` faults**, a server being what renders the
+markup a page adopts.
 
 **`drop` and `mounted` are the two the string host does not need**, and they were added when the DOM
 host was written rather than guessed at in advance:
@@ -222,10 +266,15 @@ diff would move a handful. It is correct and it is not fast.
 
 ## Requirements
 
-slate **0.0.28** or newer, as of lath 0.3.0, and the router is what moved it. Two things arrived in
-that release for it: **`slate:url`**, so that the percent-coder a router needs can be imported by a
-page without dragging a whole HTTP server in with it, and **`mods` and `button` on a handler's event
-record**, without which `Link` could not tell a plain click from a cmd-click.
+slate **0.0.28** or newer, as of lath 0.3.0, and this release is what moved it. Three things arrived
+in that one for this package: **`slate:url`**, so that the percent-coder a router needs can be
+imported by a page without dragging a whole HTTP server in with it; **`mods` and `button` on a
+handler's event record**, without which `Link` could not tell a plain click from a cmd-click; and
+**`children`, `tagName`, `nodeText` and `attribute` on `slate:dom`**, without which nothing could
+read a page at all and `hydrate` could not exist.
+
+**`Host` is nine functions rather than eight as of 0.3.0**, which is the one breaking change: a host
+of your own needs an `adopt`, and `stringHost() with { … }` gets one that faults for free.
 
 The floor before that was 0.0.9, for the two exported types — a `type` declaration could not name one
 imported from another file before it, so `type Rendered = { el: Element }` in your own code would not
@@ -243,10 +292,10 @@ box(props: object) -> Element = <div class="box">{props.title}</div>
 myHost() -> Host = stringHost() with { serialise: countingSerialise }
 ```
 
-**`Host` is the eight functions an adapter answers**, and annotating one with it is the only check
-there is that it is whole — this package shipped an adapter with six and needed eight, and neither
-missing function was guessable from the first implementation. `domHost` carries `-> Host` for
-exactly that reason.
+**`Host` is the nine functions an adapter answers**, and annotating one with it is the only check
+there is that it is whole — this package shipped an adapter with six, needed eight to render into a
+document and nine to adopt one, and not one of the three was guessable from the first implementation.
+`domHost` carries `-> Host` for exactly that reason.
 
 ## Licence
 

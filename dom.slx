@@ -11,6 +11,7 @@
 
 import { createElement, createText, setAttribute, removeAttribute, setProperty, on, off,
     setChildren, setText, byId, query, markup, release } from slate:dom
+import { children, tagName, nodeText, attribute } from slate:dom
 import { location, pushPath, onNavigate } from slate:dom
 import { Host, useState, useEffect } from "./lath.slx"
 import { navigateWith } from "./router.slx"
@@ -67,7 +68,12 @@ export domHost(into: string) -> Host =
             // alone and the page would appear frozen.
             if name == "value" || name == "checked"
                 setProperty(node, name, value)
-            else
+            elif attribute(node, name) != value
+                // **Comparing before setting is what makes a hydrated page make no mutations at
+                // all**, and it is worth having on every render and not only the first: an attribute
+                // written to the value it already holds is a mutation observers see, styles
+                // recompute for, and a screen reader announces. `attribute` answers `true` for a bare
+                // attribute, which is exactly what `setAttribute` writes for one, so the two agree.
                 setAttribute(node, name, value)
 
         for name in had
@@ -83,7 +89,7 @@ export domHost(into: string) -> Host =
         null
 
     setNodeText(node: integer, s: string) =
-        setText(node, s)
+        if nodeText(node) != s then setText(node, s)
 
         null
 
@@ -120,8 +126,26 @@ export domHost(into: string) -> Host =
 
         null
 
+    // The child that is already there, for a render that adopts the page rather than building it.
+    //
+    // **`parent` of `null` is this host's own container**, which is the one place the framework has
+    // no node to name -- the nodes at the very top of the tree have no host node above them.
+    //
+    // **It answers a RECORD and not a bare node.** `lath.slx` may not import `slate:dom`, so it
+    // cannot ask a node its tag or its text; the host is the only thing that knows what a node is,
+    // and handing back `{ node, tag, text }` is what keeps it that way. `tag` is `null` for a text
+    // node, which is how the framework tells the two apart.
+    adopt(parent, index: integer) =
+        val kids = children(parent ?? el)
+
+        if index >= kids.len() then return null
+
+        val node = kids[index]
+
+        { node: node, tag: tagName(node), text: nodeText(node) }
+
     { element: element, text: text, setProps: setProps, setKids: setKids, setText: setNodeText,
-      serialise: serialise, drop: drop, mounted: mounted, into: el }
+      serialise: serialise, drop: drop, mounted: mounted, adopt: adopt, into: el, where: into }
 
 // A handler by its React spelling, attached under the DOM's: `onClick` is `click`, and dropping the
 // `on` and lowering the letter after it is the whole of the translation.

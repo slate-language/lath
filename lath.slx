@@ -31,7 +31,7 @@ export type Element = { type: any, props: object, key: any }
 // **A program writing its own host annotates it with this** — `myHost() -> Host` — which is the one
 // check there is that an adapter is whole. It shipped with six of these and needed eight: an adapter
 // with one implementation is a guess, and the two that were missing are `drop` and `mounted`.
-export type Host = { element: function, text: function, setProps: function, setKids: function, setText: function, serialise: function, drop: function, mounted: function }
+export type Host = { element: function, text: function, setProps: function, setKids: function, setText: function, serialise: function, drop: function, mounted: function, adopt: function }
 
 // What every element in the source is desugared into.
 //
@@ -191,17 +191,84 @@ build(root: object, parent, el) -> object =
     val inst = instance(root, parent, el, kind)
 
     if kind == "text"
-        inst.node = root.host.text(string(el))
+        inst.node = if root.claim == null then root.host.text(string(el)) else claimText(root, string(el))
 
         return inst
 
     inst.key = el.key ?? null
 
-    if kind == "host" then inst.node = root.host.element(el.type)
+    if kind == "host"
+        inst.node = if root.claim == null then root.host.element(el.type) else claimElement(root, el.type)
 
     update(inst)
 
     inst
+
+// -- hydration -------------------------------------------------------------------------------
+
+// What the page already has where this one goes, or a fault saying what was found instead.
+//
+// **The cursor is a position among the HOST children of the nearest host ancestor**, which is not the
+// same as a position in the element tree: a component and a fragment have no node of their own, so
+// their children sit among their parent's. `root.claim` is that cursor and it is pushed and restored
+// around every host element's children.
+//
+// **`adopt` answers a RECORD and not a bare node**, and that is what keeps the adapter an adapter:
+// `lath.slx` may not import `slate:dom`, so it cannot ask a node its tag or its text -- the host is
+// the only thing that knows what a node is. `{ node, tag, text }`, with `tag` null for a text node.
+claimed(root: object, want: string) =
+    val cursor = root.claim
+    val found = root.host.adopt(cursor.into, cursor.at)
+
+    push(root.trail, cursor.at)
+
+    cursor.at = cursor.at + 1
+
+    if found == null then mismatch(root, want, "nothing -- the markup ran out")
+
+    found
+
+claimText(root: object, want: string) =
+    val found = claimed(root, "the text " + toJSON(want))
+
+    if found.tag != null then mismatch(root, "the text " + toJSON(want), "<" + found.tag + ">")
+    if found.text != want
+        mismatch(root, "the text " + toJSON(want), "the text " + toJSON(found.text))
+
+    pop(root.trail)
+
+    found.node
+
+// **This one does NOT pop the trail and the text one does**, which is the whole of how a path reads
+// `page > 0 > 1`: an element's own index has to stay on the trail while its children are walked, and
+// `update` takes it off when it is done with them. A text node has no children and is finished here.
+claimElement(root: object, tag: string) =
+    val found = claimed(root, "<" + tag + ">")
+
+    if found.tag != tag
+        mismatch(root, "<" + tag + ">",
+            if found.tag == null then "the text " + toJSON(found.text) else "<" + found.tag + ">")
+
+    found.node
+
+// **A MISMATCH IS A FAULT AND THERE IS NO FALLING BACK TO A CLIENT RENDER.** A page that quietly
+// rebuilt what it could not adopt would hide a server and a client that disagree -- which is the one
+// defect hydration exists to expose -- and it would hide it behind a page that looks right.
+mismatch(root: object, wanted: string, found: string) =
+    // **The brackets are what continue the line**, a trailing `+` outside a bracket pair not being a
+    // continuation in slate.
+    throw ("the page does not match what was rendered: at " + where(root) +
+        " the tree wants " + wanted + " and the page has " + found)
+
+// The path to the node being adopted: the host's own name for where it mounts, then the child index
+// at each level down. `#app > 0 > 2` is the third child of the first child of the container.
+where(root: object) -> string =
+    var out = root.host.where ?? "the root"
+
+    for i in root.trail
+        out = out + " > " + string(i)
+
+    out
 
 update(inst: object) =
     if inst.kind == "text"
@@ -224,9 +291,36 @@ update(inst: object) =
     if inst.kind == "host"
         inst.root.host.setProps(inst.node, inst.el.props)
 
+    val root = inst.root
+    val outer = root.claim
+
+    // **A host element's children are counted from ITS node and from zero**, so the cursor is pushed
+    // here and put back afterwards. A component or a fragment pushes nothing: its children stand
+    // among its parent's, which is exactly what having no node of its own means.
+    if outer != null && inst.kind == "host" then root.claim = { into: inst.node, at: 0 }
+
     reconcileKids(inst, inst.el.props.children)
 
-    if inst.kind == "host" then inst.root.host.setKids(inst.node, childNodes(inst))
+    if outer != null && inst.kind == "host"
+        // **The page may not have MORE children than the tree wanted**, which is the other half of
+        // running out: a server that rendered an extra row would otherwise leave it on the page for
+        // ever, adopted by nothing and updated by nothing.
+        val spare = root.host.adopt(inst.node, root.claim.at)
+
+        if spare != null
+            push(root.trail, root.claim.at)
+            mismatch(root, "nothing more",
+                if spare.tag == null then "the text " + toJSON(spare.text) else "<" + spare.tag + ">")
+
+        root.claim = outer
+
+        // This element's own index, put on by `claimElement` and kept while its children were walked.
+        pop(root.trail)
+
+    // **Nothing is SET during hydration.** Every child was adopted from this node at consecutive
+    // positions and the count was just checked, so the list is already what it should be -- and
+    // setting it would be a mutation, which is the one thing a hydrated page must not make.
+    if inst.kind == "host" && outer == null then inst.root.host.setKids(inst.node, childNodes(inst))
 
     null
 
@@ -326,13 +420,58 @@ unmount(inst: object) =
 
 // An element rendered, and kept so that it can be rendered again.
 export mount(el, host = null) -> object =
-    val root = { host: host ?? stringHost(), inst: null, pending: [], effects: [], scheduled: false }
+    val root = newRoot(host ?? stringHost())
 
     root.inst = reconcile(root, null, null, el)
 
     commit(root)
 
     root
+
+// An element ADOPTED: the same render, taking the nodes already on the page instead of creating them.
+//
+//     hydrate(<App/>, domHost("#app"))
+//
+// **A hydrated page makes no DOM mutations at all**, which is the whole point and is what the jsdom
+// check measures with a `MutationObserver`. Everything that would have been created is adopted;
+// everything that would have been set is compared first and set only where it differs; and the child
+// lists are not set at all, each child having been adopted from its parent in order.
+//
+// **Handlers are attached, and that is what hydration is FOR.** The markup a server sent is already
+// the page; what it does not have is a single event listener, and the tree this walks is what
+// installs them.
+//
+// **Markup that does not match is a fault** naming the path and both sides. There is no falling back
+// to building the tree: a page that quietly rebuilt what it could not adopt would hide a server and
+// a client that disagree, which is the defect hydration exists to expose.
+export hydrate(el, host = null) -> object =
+    val root = newRoot(host ?? stringHost())
+
+    root.claim = { into: null, at: 0 }
+    root.trail = []
+
+    root.inst = reconcile(root, null, null, el)
+
+    // **The tree may not have left anything over at the top either.** `null` is the host's own
+    // container, so this is the same count check every host element gets, asked of the root.
+    val spare = root.host.adopt(null, root.claim.at)
+
+    if spare != null
+        push(root.trail, root.claim.at)
+        mismatch(root, "nothing more",
+            if spare.tag == null then "the text " + toJSON(spare.text) else "<" + spare.tag + ">")
+
+    // **The commit happens while the claim is still set**, which is what keeps `mounted` from being
+    // called: those nodes are already the container's children and handing them to the host again is
+    // a mutation. Every commit after this one is ordinary.
+    commit(root)
+
+    root.claim = null
+
+    root
+
+newRoot(host) -> object =
+    { host: host, inst: null, pending: [], effects: [], scheduled: false, claim: null, trail: [] }
 
 // The rendered tree as text, which is what the string host is for.
 export html(root: object) -> string = root.host.serialise(nodesOf(root.inst))
@@ -362,6 +501,14 @@ export flush(root: object) =
 
 // The effects the render queued, run outermost first, each after its own cleanup.
 commit(root: object) =
+    // **A hydrating commit does not hand the host the top of the tree**, because those nodes are
+    // already the container's children and putting them there again is a mutation -- which is the one
+    // thing a hydrated page must not make. Every commit after this one does.
+    if root.claim != null
+        runEffects(root)
+
+        return null
+
     // **The host is handed the top of the tree on every commit, not only the first.** A host node's
     // children are set by the reconciler, but the nodes at the very TOP have no host node above them
     // -- so when a component at the root renders a different set, nothing would have told the host.
@@ -369,6 +516,10 @@ commit(root: object) =
     // host would leave an element on the page that the program had stopped rendering.
     root.host.mounted(nodesOf(root.inst))
 
+    runEffects(root)
+
+// The effects the render queued, run outermost first, each after its own cleanup.
+runEffects(root: object) =
     val queued = root.effects
 
     root.effects = []
@@ -422,7 +573,16 @@ scheduled(root: object) =
 // that, which is what a number written in prose does.
 export stringHost() -> Host =
     { element: hostElement, text: hostText, setProps: hostSetProps, setKids: hostSetKids,
-      setText: hostSetText, serialise: serialiseNodes, drop: hostDrop, mounted: hostMounted }
+      setText: hostSetText, serialise: serialiseNodes, drop: hostDrop, mounted: hostMounted,
+      adopt: hostAdopt }
+
+// **A string host has nothing to hydrate, and this FAULTS rather than answering nothing.** A server
+// is the thing that renders the markup a page hydrates; it never hydrates anything itself. Answering
+// `null` here would make `hydrate` quietly fall back to building the tree, which is the failure
+// hydration exists to expose wearing a disguise.
+hostAdopt(parent, index: integer) =
+    throw "a string host has nothing to hydrate -- markup is what it produces, not what it adopts"
+
 
 hostElement(tag: string) -> object = { tag: tag, props: {}, kids: [] }
 

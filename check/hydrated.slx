@@ -1,0 +1,47 @@
+// Hydration against a real DOM: a page that adopts the markup it was sent and mutates nothing.
+//
+// **THE PROGRAM IS THE SAME ON A SERVER AND IN THE BROWSER, and it decides by looking.** An empty
+// container means nobody rendered this yet, so it renders and prints the markup a server would have
+// sent; a container with something in it means the markup arrived, so it adopts. That is what a real
+// application does, and it is what lets one file be both halves of the driver's measurement.
+//
+// **`check/README.md` says how to run it.** The measurement is a `MutationObserver`, which is the
+// only instrument that can say "nothing was touched" -- counting what lath called would only say
+// that lath believes it touched nothing.
+
+import { createElement, Fragment, mount, hydrate, html, stringHost, useState } from "../lath.slx"
+import { domHost } from "../dom.slx"
+import { byId, children } from slate:dom
+
+Row(props: object) = <li class="row" data-id={props.id}>{props.name}</li>
+
+Counter(props: object) =
+    val [n, setN] = useState(0)
+
+    <button id="tick" type="button" onClick={() -> setN(n + 1)}>{string(n)}</button>
+
+// **A tree with every shape hydration has to walk**: an element with attributes, text, a nested
+// element, a list built from data, a component with state, and a fragment, which has no node of its
+// own and whose children stand among its parent's.
+App(props: object) =
+    <div class="app">
+        <h1>Hydrated</h1>
+        <ul>
+            <Row id="1" name="one"/>
+            <Row id="2" name="two"/>
+        </ul>
+        <><span>a</span><span>b</span></>
+        <Counter/>
+    </div>
+
+val app = byId("app")
+
+if children(app).len() == 0
+    print("rendering")
+    print("markup " + html(mount(<App/>, stringHost())))
+else
+    print("hydrating")
+
+    hydrate(<App/>, domHost("#app"))
+
+    print("ready")

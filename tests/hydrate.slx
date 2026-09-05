@@ -1,0 +1,253 @@
+import { createElement, Fragment, mount, hydrate, html, flush, stringHost, useState } from "../lath.slx"
+
+// Hydration: the same render, taking the nodes already there instead of creating them.
+//
+// **THE HOST HERE IS A PAGE THE TEST BUILT, AND THAT IS LEGITIMATE WHERE A FAKE DOCUMENT WOULD NOT
+// BE.** What these pin is the RECONCILER's half -- the order it adopts in, the count it insists on,
+// and the sentence a mismatch produces -- none of which is about what a real DOM does. The DOM host's
+// half is checked against jsdom in `check/`, where a document written beside the code it checks would
+// agree with that code by construction and prove nothing.
+//
+// **The host counts what it was made to do**, which is the measurement: a hydrated page creates
+// nothing, sets no child list, and writes no attribute that was already right.
+
+// A node of the little page these tests hydrate against. An element, or text.
+tag(name: string, attrs: object, kids: array) -> object = { tag: name, attrs: attrs, kids: kids }
+
+words(s: string) -> object = { tag: null, attrs: {}, kids: [], text: s }
+
+// A host over a page the test built, counting everything it was asked to change.
+pageHost(top: array) =
+    val seen = { made: 0, wrote: 0, kids: 0, text: 0, mounts: 0 }
+    val root = tag("#root", {}, top)
+
+    made(node) =
+        seen.made = seen.made + 1
+
+        node
+
+    element(name: string) = made(tag(name, {}, []))
+
+    text(s: string) = made(words(s))
+
+    setProps(node: object, props: object) =
+        for [name, value] in entries(props)
+            if name == "children" || name == "key" then continue
+            if isOn(name) then continue
+
+            // **Comparing before writing is what the zero-mutation claim rests on**, and it is the
+            // DOM host's rule too rather than something this test invented.
+            if (node.attrs[name] ?? null) != value
+                node.attrs[name] = value
+                seen.wrote = seen.wrote + 1
+
+        null
+
+    setKids(node: object, kids: array) =
+        node.kids = kids
+        seen.kids = seen.kids + 1
+
+        null
+
+    setNodeText(node: object, s: string) =
+        if node.text != s
+            node.text = s
+            seen.text = seen.text + 1
+
+        null
+
+    serialise(nodes: array) -> string =
+        var out = ""
+
+        for node in nodes
+            out = out + draw(node)
+
+        out
+
+    drop(node) = null
+
+    mounted(nodes: array) =
+        seen.mounts = seen.mounts + 1
+
+        null
+
+    adopt(parent, index: integer) =
+        val kids = (parent ?? root).kids
+
+        if index >= kids.len() then return null
+
+        val node = kids[index]
+
+        { node: node, tag: node.tag, text: node.text ?? "" }
+
+    { element: element, text: text, setProps: setProps, setKids: setKids, setText: setNodeText,
+      serialise: serialise, drop: drop, mounted: mounted, adopt: adopt, where: "page", seen: seen }
+
+isOn(name: string) -> boolean =
+    name.len() > 2 && name[0..<2] == "on" && name[2] == name[2].upper()
+
+draw(node: object) -> string =
+    if node.tag == null then return node.text
+
+    var out = "<" + node.tag + ">"
+
+    for kid in node.kids
+        out = out + draw(kid)
+
+    out + "</" + node.tag + ">"
+
+// The page a matching render would have produced: `<p class="a">hello<b>there</b></p>`.
+page() -> array =
+    [tag("p", { class: "a" }, [words("hello"), tag("b", {}, [words("there")])])]
+
+Same(props: object) = <p class="a">hello<b>there</b></p>
+
+fell(f) -> string =
+    var said = ""
+
+    try
+        f()
+    catch e
+        said = e.message
+
+    said
+
+@test
+A_HYDRATED_PAGE_CREATES_NOTHING_AND_SETS_NO_CHILD_LIST()
+    // **This is the whole of what hydration is for.** A render that built the tree would create four
+    // nodes and set two child lists; adopting makes neither, and the counts are the measurement.
+    val host = pageHost(page())
+
+    hydrate(<Same/>, host)
+
+    assertEq(host.seen.made, 0)
+    assertEq(host.seen.kids, 0)
+    assertEq(host.seen.text, 0)
+
+@test
+AN_ATTRIBUTE_THAT_IS_ALREADY_RIGHT_IS_NOT_WRITTEN_AGAIN()
+    // **An attribute written to the value it already holds is a mutation** an observer sees, styles
+    // recompute for, and a screen reader announces. The host compares first, and so does the DOM one.
+    val host = pageHost(page())
+
+    hydrate(<Same/>, host)
+
+    assertEq(host.seen.wrote, 0)
+
+@test
+AN_ATTRIBUTE_THAT_IS_WRONG_IS_THE_ONE_THING_A_HYDRATION_DOES_WRITE()
+    // A mismatched attribute is not a mismatched TREE: the shape is right and one value is stale, so
+    // the render corrects it rather than refusing. That is the line between the two.
+    val host = pageHost([tag("p", { class: "stale" }, [words("hello"), tag("b", {}, [words("there")])])])
+
+    hydrate(<Same/>, host)
+
+    assertEq(host.seen.wrote, 1)
+    assertEq(host.seen.made, 0)
+
+@test
+A_MOUNTED_RENDER_MAKES_EVERYTHING_A_HYDRATED_ONE_ADOPTS()
+    // **The control.** Without it the counts above could be zero because nothing ran at all, which is
+    // the way a measurement of "did nothing" fails.
+    val host = pageHost([])
+
+    mount(<Same/>, host)
+
+    assertEq(host.seen.made, 4)
+    assertEq(host.seen.kids, 2)
+
+@test
+A_TAG_THAT_DOES_NOT_MATCH_IS_A_FAULT_NAMING_THE_PATH_AND_BOTH_SIDES()
+    // **A mismatch faults and there is no falling back to a client render.** A page that quietly
+    // rebuilt what it could not adopt would hide a server and a client that disagree, which is the
+    // defect hydration exists to expose.
+    val host = pageHost([tag("div", { class: "a" }, [words("hello"), tag("b", {}, [words("there")])])])
+    val said = fell(() -> hydrate(<Same/>, host))
+
+    assert(contains(said, "at page > 0"))
+    assert(contains(said, "the tree wants <p>"))
+    assert(contains(said, "the page has <div>"))
+
+@test
+THE_PATH_COUNTS_DOWN_THROUGH_THE_TREE()
+    // `page > 0 > 1` is the second child of the first child of the container, which is where the `<b>`
+    // is. A path that only ever named the top would send the reader to the wrong element.
+    val host = pageHost([tag("p", { class: "a" }, [words("hello"), tag("i", {}, [words("there")])])])
+    val said = fell(() -> hydrate(<Same/>, host))
+
+    assert(contains(said, "at page > 0 > 1"))
+    assert(contains(said, "wants <b>"))
+    assert(contains(said, "has <i>"))
+
+@test
+TEXT_THAT_DOES_NOT_MATCH_IS_A_FAULT_AND_SAYS_BOTH_STRINGS()
+    val host = pageHost([tag("p", { class: "a" }, [words("goodbye"), tag("b", {}, [words("there")])])])
+    val said = fell(() -> hydrate(<Same/>, host))
+
+    assert(contains(said, "at page > 0 > 0"))
+    assert(contains(said, "wants the text \"hello\""))
+    assert(contains(said, "has the text \"goodbye\""))
+
+@test
+AN_ELEMENT_WHERE_TEXT_WAS_WANTED_SAYS_SO_RATHER_THAN_COMPARING_STRINGS()
+    val host = pageHost([tag("p", { class: "a" }, [tag("em", {}, []), tag("b", {}, [words("there")])])])
+    val said = fell(() -> hydrate(<Same/>, host))
+
+    assert(contains(said, "wants the text \"hello\""))
+    assert(contains(said, "has <em>"))
+
+@test
+MARKUP_THAT_RAN_OUT_IS_A_FAULT_AND_NOT_A_QUIET_BUILD()
+    // **The commonest real mismatch**, and the one a fallback would hide best: a server that rendered
+    // less than the client wants leaves a page that is simply missing things.
+    val host = pageHost([tag("p", { class: "a" }, [words("hello")])])
+    val said = fell(() -> hydrate(<Same/>, host))
+
+    assert(contains(said, "at page > 0 > 1"))
+    assert(contains(said, "the page has nothing -- the markup ran out"))
+
+@test
+MARKUP_WITH_MORE_IN_IT_THAN_THE_TREE_WANTED_IS_A_FAULT_TOO()
+    // **The other half, and it is the one nothing else would ever notice.** An extra node adopted by
+    // nothing and updated by nothing stays on the page for the life of the program.
+    val extra = [tag("p", { class: "a" },
+        [words("hello"), tag("b", {}, [words("there")]), tag("span", {}, [])])]
+    val said = fell(() -> hydrate(<Same/>, pageHost(extra)))
+
+    assert(contains(said, "at page > 0 > 2"))
+    assert(contains(said, "the tree wants nothing more"))
+    assert(contains(said, "the page has <span>"))
+
+@test
+AND_AT_THE_TOP_AS_WELL_AS_INSIDE()
+    val said = fell(() -> hydrate(<Same/>, pageHost([page()[0], tag("hr", {}, [])])))
+
+    assert(contains(said, "at page > 1"))
+    assert(contains(said, "wants nothing more"))
+    assert(contains(said, "has <hr>"))
+
+@test
+A_STRING_HOST_REFUSES_TO_HYDRATE_RATHER_THAN_ANSWERING_NOTHING()
+    // **A server is what renders the markup a page hydrates and never hydrates anything itself.**
+    // Answering `null` here would make `hydrate` fall back to building the tree, silently — which is
+    // the failure this whole item exists to make loud.
+    val said = fell(() -> hydrate(<Same/>, stringHost()))
+
+    assert(contains(said, "a string host has nothing to hydrate"))
+
+@test
+A_HYDRATED_TREE_STILL_RENDERS_WHEN_ITS_STATE_CHANGES()
+    // **Hydration is the first render and not a different kind of tree.** Everything after it is an
+    // ordinary render, which is what makes the handlers it attached worth attaching.
+    val host = pageHost([tag("p", {}, [words("0")])])
+
+    Counter(props: object) =
+        val [n, setN] = useState(0)
+
+        <p>{string(n)}</p>
+
+    val root = hydrate(<Counter/>, host)
+
+    assertEq(host.seen.made, 0)
+    assertEq(host.seen.text, 0)
+    assertEq(host.serialise([host.adopt(null, 0).node]), "<p>0</p>")
