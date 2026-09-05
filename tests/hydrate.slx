@@ -55,27 +55,23 @@ pageHost(top: array) =
 
         null
 
-    // **Two operations where there was one `setKids`**, and the count is the measurement: a hydrated
-    // page makes neither, because every child was adopted from its parent in order.
-    insertKid(parent: object, node: object, before) =
-        val was = parent.kids.indexOf(node)
+    // **What CHANGED where there was once a whole child list**, and the counts are the measurement:
+    // a hydrated page is handed nothing at all, every child having been adopted from its parent in
+    // order.
+    patch(parent: object, ops: array) =
+        for op in ops
+            val was = parent.kids.indexOf(op.node)
 
-        if was != null then removeAt(parent.kids, was)
+            if was != null then removeAt(parent.kids, was)
 
-        val to = if before == null then null else parent.kids.indexOf(before)
+            if op.kind == "remove"
+                seen.took = seen.took + 1
+            else
+                val to = if op.before == null then null else parent.kids.indexOf(op.before)
 
-        if to == null then push(parent.kids, node) else insert(parent.kids, to, node)
+                if to == null then push(parent.kids, op.node) else insert(parent.kids, to, op.node)
 
-        seen.put = seen.put + 1
-
-        null
-
-    removeKid(parent: object, node: object) =
-        val at = parent.kids.indexOf(node)
-
-        if at != null then removeAt(parent.kids, at)
-
-        seen.took = seen.took + 1
+                seen.put = seen.put + 1
 
         null
 
@@ -112,7 +108,7 @@ pageHost(top: array) =
 
     { element: element, text: text, setProps: setProps, setText: setNodeText,
       serialise: serialise, drop: drop, mounted: mounted, adopt: adopt,
-      insert: insertKid, remove: removeKid, where: "page", seen: seen }
+      patch: patch, where: "page", seen: seen }
 
 isOn(name: string) -> boolean =
     name.len() > 2 && name[0..<2] == "on" && name[2] == name[2].upper()

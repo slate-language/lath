@@ -1,0 +1,125 @@
+import { createElement, Fragment, mount, hydrate, html, stringHost, useState } from "../lath.slx"
+import { domHost } from "../dom.slx"
+import { at, click, says, shown, mutations } from "./probe.slx"
+
+// Hydration against a real document, measured by a `MutationObserver`.
+//
+// **The observer is the whole point and nothing else would do.** Counting what lath asked the host to
+// do would only say that lath believes it touched nothing; an observer is the browser's own answer,
+// and it sees a write the framework did not know it was making -- an attribute set to the value it
+// already held, a child list replaced with the same children, a text node rewritten with the same
+// text. `tests/hydrate.slx` counts what the host was asked for, which is the other half; this counts
+// what the page recorded.
+//
+// **The markup comes from lath's own string host**, which is what makes the whitespace question
+// answer itself: a tree hydrating against its own output is exact, and a page pretty-printed by
+// anything else is a mismatch and ought to be.
+
+Row(props: object) = <li class="row" data-id={props.id}>{props.name}</li>
+
+Counter(props: object) =
+    val [n, setN] = useState(0)
+
+    <button id="tick" type="button" onClick={() -> setN(n + 1)}>{string(n)}</button>
+
+// **A tree with every shape hydration has to walk**: an element with attributes, text, a nested
+// element, a list built from data, a component with state, and a fragment -- which has no node of
+// its own and whose children stand among its parent's.
+App(props: object) =
+    <div class="app">
+        <h1>Hydrated</h1>
+        <ul>
+            <Row id="1" name="one"/>
+            <Row id="2" name="two"/>
+        </ul>
+        <><span>a</span><span>b</span></>
+        <Counter/>
+    </div>
+
+// What a server would have sent.
+sent() -> string = html(mount(<App/>, stringHost()))
+
+fell(f) -> string =
+    var said = ""
+
+    try
+        f()
+    catch e
+        said = e.message
+
+    said
+
+@test
+async A_HYDRATED_PAGE_MAKES_NO_MUTATIONS_AT_ALL()
+    val markup = sent()
+
+    at(markup)
+
+    // The records for planting the markup are the harness's own; the measurement starts after them.
+    await sleep(1)
+
+    val before = mutations()
+
+    hydrate(<App/>, domHost("#page"))
+
+    await sleep(1)
+
+    assertEq(mutations() - before, 0)
+
+    // And what is on the page is still exactly what was sent, character for character.
+    assertEq(shown(), "<div id=\"page\">" + markup + "</div>")
+
+@test
+async A_MOUNTED_RENDER_INTO_THE_SAME_MARKUP_RECORDS_PLENTY()
+    // **The control**, and it is the way a measurement of "nothing happened" fails: without it the
+    // zero above could be zero because the observer was watching the wrong thing.
+    at(sent())
+
+    await sleep(1)
+
+    val before = mutations()
+
+    mount(<App/>, domHost("#page"))
+
+    await sleep(1)
+
+    assert(mutations() - before > 0)
+
+@test
+async THE_HANDLERS_IT_ATTACHED_ACTUALLY_WORK()
+    // **This is what hydration is FOR.** The markup a server sent is already the page; what it does
+    // not have is a single event listener, and the tree that was walked is what installs them.
+    at(sent())
+
+    hydrate(<App/>, domHost("#page"))
+
+    assertEq(says("tick"), "0")
+
+    click("#tick")
+
+    await sleep(1)
+
+    assertEq(says("tick"), "1")
+
+@test
+MARKUP_THAT_DOES_NOT_MATCH_IS_A_FAULT_NAMING_THE_PATH_AND_BOTH_SIDES()
+    // **There is no falling back to a client render**, which is the user-facing decision: a page that
+    // quietly rebuilt what it could not adopt would hide a server and a client that disagree -- the
+    // one defect hydration exists to expose -- behind a page that looks right.
+    val bent = sent().replace("<h1>Hydrated</h1>", "<h2>Hydrated</h2>")
+
+    at(bent)
+
+    val said = fell(() -> hydrate(<App/>, domHost("#page")))
+
+    assert(contains(said, "the page does not match what was rendered"))
+    assert(contains(said, "#page > 0 > 0"))
+    assert(contains(said, "wants <h1>"))
+    assert(contains(said, "has <h2>"))
+
+@test
+A_STRING_HOST_STILL_REFUSES_TO_HYDRATE_EVEN_WHERE_THERE_IS_A_DOCUMENT()
+    // A server is what renders the markup a page adopts and never adopts anything itself, and being
+    // run in a page does not change that.
+    assert(contains(fell(() -> hydrate(<App/>, stringHost())),
+        "a string host has nothing to hydrate"))

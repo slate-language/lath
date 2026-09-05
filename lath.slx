@@ -28,20 +28,25 @@ export val Fragment = "#fragment"
 // itself, which every slate value does.
 export type Element = { type: any, props: object, key: any }
 
-// The ten functions a host answers, and nothing above them knows what a node is.
+// The nine functions a host answers, and nothing above them knows what a node is.
 //
 // **A program writing its own host annotates it with this** — `myHost() -> Host` — which is the one
-// check there is that an adapter is whole. It shipped with six of these and needs ten: an adapter
-// with one implementation is a guess, and not one of the four that arrived later was guessable from
-// the first implementation.
+// check there is that an adapter is whole. It shipped with six of these: an adapter with one
+// implementation is a guess, and not one of the three that arrived later was guessable from the
+// first implementation.
 //
-// **`insert` and `remove` replaced a `setKids` that took the whole list.** Replacing a parent's
-// children is one call and the right answer while the only host is a string; on a page it rebuilds a
-// thousand rows to move three, and takes the focus, the selection and the scroll position with them.
-// `insert(parent, node, before)` puts a node in front of `before`, or at the end where that is
-// `null`, **and moves it where the parent already holds it** — which is what `insertBefore` does and
-// is the whole of how a reorder is spelled.
-export type Host = { element: function, text: function, setProps: function, setText: function, serialise: function, drop: function, mounted: function, adopt: function, insert: function, remove: function }
+// **`patch(parent, ops)` REPLACED A `setKids` THAT TOOK THE WHOLE LIST**, and the count is the same
+// because it is the same slot filled differently. Replacing a parent's children is one call and the
+// right answer while the only host is a string; on a page it rebuilds a thousand rows to move three,
+// and takes the focus, the selection and the scroll position with them. `ops` is what CHANGED, in
+// order — `{ kind: "remove", node }` and `{ kind: "insert", node, before }`, where `before` of
+// `null` means the end and where inserting a node the parent already holds MOVES it, which is what
+// `insertBefore` does.
+//
+// **A host is handed the whole batch and not one operation at a time**, which is the difference
+// between the two kinds of host: one that can move a single child walks the list, and one that can
+// only write a whole child list applies the operations to a list of its own and writes once.
+export type Host = { element: function, text: function, setProps: function, setText: function, serialise: function, drop: function, mounted: function, adopt: function, patch: function }
 
 // What every element in the source is desugared into.
 //
@@ -922,14 +927,14 @@ export createPortal(el, into) -> Element =
 
 // -- the string host -------------------------------------------------------------------------
 
-// **Ten functions, and nothing above them knows what a node is.** A DOM host answers the same ten
+// **Nine functions, and nothing above them knows what a node is.** A DOM host answers the same nine
 // over real elements, which is what makes the components on both sides one set of components. It
-// shipped with six, needed `drop` and `mounted` to render into a document, `adopt` to hydrate one,
-// and `insert` and `remove` in place of a `setKids` that replaced a whole list.
+// shipped with six, needed `drop` and `mounted` to render into a document and `adopt` to hydrate
+// one; `patch` is `setKids`'s slot, filled with what changed rather than with what the list now is.
 export stringHost() -> Host =
     { element: hostElement, text: hostText, setProps: hostSetProps,
       setText: hostSetText, serialise: serialiseNodes, drop: hostDrop, mounted: hostMounted,
-      adopt: hostAdopt, insert: hostInsert, remove: hostRemove }
+      adopt: hostAdopt, patch: hostPatch }
 
 // **A string host has nothing to hydrate, and this FAULTS rather than answering nothing.** A server
 // is the thing that renders the markup a page hydrates; it never hydrates anything itself. Answering
@@ -953,14 +958,20 @@ nextId() -> integer =
 
 hostElement(tag: string) -> object = { id: nextId(), tag: tag, props: {}, kids: [] }
 
-// A node put in front of `before`, or at the end where that is `null`.
+// What changed about a parent's children, applied in order.
 //
+// **A string host can move one child, so it walks the list** -- which is the half of the contract the
+// DOM host cannot demonstrate, `slate:dom` having no `insertBefore`.
+hostPatch(parent: object, ops: array) =
+    for op in ops
+        if op.kind == "remove" then hostTake(parent, op.node) else hostPut(parent, op.node, op.before)
+
+    null
+
 // **A node the parent already holds is MOVED**, which is what `insertBefore` does and is the whole of
 // how a keyed reorder is spelled: taken out of where it stood and put in where it goes.
-hostInsert(parent: object, node, before) =
-    val was = parent.kids.indexOf(node)
-
-    if was != null then removeAt(parent.kids, was)
+hostPut(parent: object, node, before) =
+    hostTake(parent, node)
 
     val to = if before == null then null else parent.kids.indexOf(before)
 
@@ -968,7 +979,7 @@ hostInsert(parent: object, node, before) =
 
     null
 
-hostRemove(parent: object, node) =
+hostTake(parent: object, node) =
     val at = parent.kids.indexOf(node)
 
     if at != null then removeAt(parent.kids, at)

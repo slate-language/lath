@@ -1,0 +1,148 @@
+import { createElement, Fragment, mount } from "../lath.slx"
+import { router, Link, Anything } from "../router.slx"
+import { domHost, usePath } from "../dom.slx"
+import { location, pushPath, back, byId } from slate:dom
+import { at, click, says, shown, navigations, prevented } from "./probe.slx"
+
+// The router against a real document: a link is clicked, the address bar moves, the view changes --
+// and the clicks that belong to the browser are left to it.
+//
+// **This is the half `slate test tests` cannot reach, and for a sharper reason than the host's.**
+// Everything else the router decides is checked there by handing it a string; what cannot be checked
+// without a document is whether a click belongs to the router or to the browser, because that is
+// read off `mods` and `button`, which the browser puts on the event and nothing else can produce.
+//
+// **A refusal is measured two ways and both are needed.** `prevented()` says the router did not call
+// `preventDefault`, which is what leaving a click alone means; `navigations()` says the browser then
+// went and tried to follow it, which is what says the anchor was a working anchor and not a broken
+// one. A router that swallowed a click would fail the first; a router whose links were dead would
+// pass the first and fail the second.
+
+Home(props: object) = <p id="view">home, and <Link to="/notes/7" id="toNote">a note</Link></p>
+
+Note(props: object) = <p id="view">note {props.id}, and <Link to="/" id="toHome">home</Link></p>
+
+Away(props: object) =
+    <p id="view">away, and <Link to="https://example.com/x" id="toAway">off site</Link></p>
+
+Missing(props: object) = <p id="view">nothing at {props.at}</p>
+
+pageRoutes() =
+    [{ path: "/", view: (m) -> <Home/> },
+     { path: "/notes/:id", view: (m) -> <Note id={m.params.id}/> },
+     { path: "/away", view: (m) -> <Away/> },
+     { path: Anything, view: (m) -> <Missing at={m.path}/> }]
+
+// **The whole of what a page writes.** `usePath` holds the address as state and tells every `Link` to
+// push rather than follow; the router is a function of that path and knows nothing else.
+App(props: object) = router(pageRoutes(), usePath())
+
+// The page emptied and the application mounted, with the address bar put back at the root first --
+// so that a test says where it starts rather than inheriting where the last one finished.
+fresh(from: string) =
+    pushPath(from)
+    at("")
+
+    mount(<App/>, domHost("#page"))
+
+@test
+A_Link_IS_A_REAL_ANCHOR_CARRYING_AN_href_AND_THE_ROUTERS_MARK()
+    // **Which is what makes the page one program.** The markup is the same on a server and in a
+    // browser, the link works with no slate on the page at all, and a middle click is a middle click
+    // because what was rendered is an ordinary anchor.
+    fresh("/")
+
+    assertEq(says("view"), "home, and a note")
+    assert(contains(shown(), "<a"))
+    assert(contains(shown(), "href=\"/notes/7\""))
+    assert(contains(shown(), "data-lath-link"))
+
+@test
+async A_PLAIN_CLICK_CHANGES_THE_VIEW_WITHOUT_A_PAGE_LOAD()
+    fresh("/")
+
+    val followed = navigations()
+
+    click("#toNote")
+
+    await sleep(1)
+
+    assertEq(says("view"), "note 7, and home")
+    assertEq(location().path, "/notes/7")
+
+    // Taken means prevented, and prevented means the browser never went anywhere.
+    assert(prevented())
+    assertEq(navigations() - followed, 0)
+
+@test
+async A_MODIFIED_CLICK_AND_A_MIDDLE_CLICK_ARE_THE_BROWSERS()
+    // **The assertion the whole of `mods` and `button` was added to `slate:dom` for.** A router that
+    // took these would swallow cmd-click, shift-click and middle-click, which is the most ordinary
+    // thing anybody does to a link.
+    fresh("/notes/7")
+
+    val followed = navigations()
+
+    for spec in ["click meta", "click ctrl", "click shift", "click alt", "click button=1"]
+        click("#toHome", spec)
+
+        await sleep(1)
+
+        assert(!prevented(), spec + " should have been left to the browser")
+        assertEq(says("view"), "note 7, and home")
+        assertEq(location().path, "/notes/7")
+
+    // **Five clicks the browser was left to follow, and it tried to follow every one.** jsdom cannot
+    // navigate, and saying so is exactly the evidence: a router that had wrongly swallowed one would
+    // leave four.
+    assertEq(navigations() - followed, 5)
+
+@test
+async AND_A_PLAIN_CLICK_ON_THE_SAME_LINK_IS_TAKEN()
+    // Which is the pair that says the five above were refused for what they were and not because the
+    // link was broken.
+    fresh("/notes/7")
+
+    val followed = navigations()
+
+    click("#toHome")
+
+    await sleep(1)
+
+    assert(prevented())
+    assertEq(says("view"), "home, and a note")
+    assertEq(location().path, "/")
+    assertEq(navigations() - followed, 0)
+
+@test
+async A_LINK_TO_ANOTHER_ORIGIN_IS_THE_BROWSERS()
+    fresh("/away")
+
+    val followed = navigations()
+
+    click("#toAway")
+
+    await sleep(1)
+
+    assert(!prevented())
+    assertEq(says("view"), "away, and off site")
+    assertEq(navigations() - followed, 1)
+
+@test
+async THE_BACK_BUTTON_MOVES_THE_VIEW_AND_A_PUSH_DOES_NOT_RAISE_ONE()
+    // **`pushPath` does not raise `onNavigate` and a back does**, which is what `usePath` is written
+    // around: a push sets the state itself, and the listener is only ever the history buttons.
+    fresh("/")
+
+    click("#toNote")
+
+    await sleep(1)
+
+    assertEq(location().path, "/notes/7")
+
+    back()
+
+    await sleep(50)
+
+    assertEq(location().path, "/")
+    assertEq(says("view"), "home, and a note")

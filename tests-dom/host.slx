@@ -1,0 +1,135 @@
+import { createElement, Fragment, mount, html, flush, useState } from "../lath.slx"
+import { domHost } from "../dom.slx"
+import { byId, query } from slate:dom
+import { at, click, says, shown } from "./probe.slx"
+
+// The DOM host, against a real document.
+//
+// **This is the only thing that runs `slate:dom` at all**, and every assertion here is one the string
+// host cannot make: `tests/` renders to markup and a markup renderer cannot tell you that a listener
+// was taken back, that a node left the page, or that text arrived as text rather than as markup.
+//
+// **A component's props are what a counter reads and a click is what changes them**, so most of the
+// file is asynchronous: a change is queued and rendered one turn of the loop later, which is React's
+// batching and slate's, so a click is followed by letting the queue run.
+
+Counter({ id, start = 0, step = 1 }) =
+    val [count, setCount] = useState(start)
+
+    <div class="counter">
+        <p id={id} class="reading">{count}</p>
+        <button class="up" onClick={() -> setCount(count + step)}>+{step}</button>
+        <button class="down" onClick={() -> setCount(count - step)}>-{step}</button>
+        <button class="reset" onClick={() -> setCount(start)}>reset</button>
+    </div>
+
+// A component that goes away, so that a test can see the node leave the page -- which is the one
+// thing about this host that has nothing to do with what is on screen.
+Maybe({ show }) =
+    if !show then return null
+
+    <p id="maybe">here</p>
+
+App(props: object) =
+    val [shownYet, setShown] = useState(true)
+
+    <>
+        <h1>slate counts</h1>
+        <Counter id="first" start={0} step={1}/>
+        <Counter id="second" start={100} step={5}/>
+        <Maybe show={shownYet}/>
+        <p id="risky">{"<script>alert(1)</script> & co"}</p>
+        <button id="hide" onClick={() -> setShown(false)}>hide</button>
+    </>
+
+// The page, freshly emptied, with the counters rendered into it.
+fresh() =
+    at("")
+
+    mount(<App/>, domHost("#page"))
+
+val first = ".counter:nth-of-type(1)"
+val second = ".counter:nth-of-type(2)"
+
+// A click, and the turn of the loop that renders what it changed.
+settled(selector: string) =
+    click(selector)
+
+    sleep(1)
+
+@test
+THE_TREE_REACHES_THE_PAGE_WITH_ITS_ATTRIBUTES()
+    fresh()
+
+    assert(query(".counter") != null)
+    assertEq(says("first") + " " + says("second"), "0 100")
+
+    // `class` is slate's spelling and reaches the document as itself; React's `className` exists
+    // only because JSX compiles into a JavaScript object literal.
+    assert(contains(shown(), "class=\"reading\""))
+
+@test
+TEXT_REACHES_THE_PAGE_AS_TEXT_AND_NOTHING_IS_EXECUTED()
+    // **The DOM host builds text nodes and never markup**, which is what makes a renderer safe by
+    // construction rather than by escaping. This says it stayed that way.
+    fresh()
+
+    assert(contains(shown(), "&lt;script&gt;alert(1)&lt;/script&gt; &amp; co"))
+    assert(query("script") == null)
+
+@test
+async THREE_CLICKS_ARE_THREE()
+    // **The case a host that only ever ADDED listeners gets wrong.** A component's handler is a fresh
+    // closure on every render, so a host that never detached would run every version the component
+    // had ever had and the reading would climb by more than one.
+    fresh()
+
+    await settled(first + " .up")
+    await settled(first + " .up")
+    await settled(first + " .up")
+
+    assertEq(says("first"), "3")
+
+    await settled(first + " .down")
+
+    assertEq(says("first"), "2")
+
+    await settled(first + " .reset")
+
+    assertEq(says("first"), "0")
+
+@test
+async THE_SECOND_COUNTER_IS_ITS_OWN()
+    // State per instance, through a real event rather than through a call to `flush`.
+    fresh()
+
+    await settled(first + " .up")
+    await settled(second + " .up")
+
+    assertEq(says("first"), "1")
+    assertEq(says("second"), "105")
+
+@test
+async A_NODE_THAT_STOPS_BEING_RENDERED_LEAVES_THE_PAGE()
+    // **A component at the very top has no host node above it**, so when it renders a different set
+    // the reconciler has nobody to tell -- `mounted` on every commit that changes the set is what
+    // closes that, and a string host cannot show it. This is the assertion that found `mounted`.
+    fresh()
+
+    assertEq(says("maybe"), "here")
+
+    await settled("#hide")
+
+    assertEq(says("maybe"), "<gone>")
+
+@test
+async THE_PAGE_STILL_WORKS_AFTER_A_NODE_WAS_DROPPED()
+    // `release` giving back a handle that was still in use would be silent until something else took
+    // the slot, and then it would be a node the program never touched changing on its own.
+    fresh()
+
+    await settled("#hide")
+    await settled(first + " .up")
+
+    assertEq(says("first"), "1")
+    assertEq(says("second"), "100")

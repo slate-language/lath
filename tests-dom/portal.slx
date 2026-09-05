@@ -1,0 +1,83 @@
+import { createElement, Fragment, mount, flush, useState, useMemo, createPortal, createContext,
+    useContext } from "../lath.slx"
+import { domHost } from "../dom.slx"
+import { byId, markup } from slate:dom
+import { beside, click, says } from "./probe.slx"
+
+// Portals and context, in a page rather than against a string.
+//
+// **A portal is the one feature whose whole point is WHERE a node ends up**, which a string host can
+// only describe and a document can show. The container here is what `byId` answers -- a real element
+// outside the tree the application renders into -- so this is the arrangement a dialog actually uses.
+
+val Theme = createContext("light")
+
+Dialog(props: object) =
+    <div class={"dialog " + useContext(Theme)}>
+        <p id="said">{props.said}</p>
+        <button id="close" onClick={props.onClose}>close</button>
+    </div>
+
+App(props: object) =
+    val [open, setOpen] = useState(true)
+    val [theme, setTheme] = useState("light")
+
+    shut() =
+        setOpen(false)
+
+        null
+
+    // **The container is held rather than looked up on every render.** `byId` mints a fresh handle
+    // each time it is called, and a portal handed a different handle is a different portal -- so a
+    // program that looked it up inline would tear the dialog down and build it again every render.
+    val modals = useMemo(() -> byId("modals"), [])
+
+    <Theme.Provider value={theme}>
+        <div class="row">
+            <button id="dark" onClick={() -> setTheme("dark")}>dark</button>
+            {open && createPortal(<Dialog said="hello" onClose={shut}/>, modals)}
+        </div>
+    </Theme.Provider>
+
+fresh() =
+    beside("<div id=\"modals\"></div>")
+
+    mount(<App/>, domHost("#page"))
+
+@test
+A_PORTALS_CONTENT_LANDS_IN_THE_OTHER_CONTAINER_AND_NOWHERE_ELSE()
+    fresh()
+
+    assert(contains(markup(byId("modals")), "<p id=\"said\">hello</p>"))
+
+    // And the element that wrote it holds none of it, which is the whole point: a dialog written
+    // inside a row is not laid out inside the row.
+    assert(!contains(markup(byId("page")), "id=\"said\""))
+
+@test
+async A_CONTEXT_REACHES_THROUGH_A_PORTAL()
+    // **The tree is what a context follows and not the page**, which is React's rule and is the one
+    // that makes a portal useful: a dialog rendered somewhere else still belongs where it was
+    // written.
+    fresh()
+
+    assert(contains(markup(byId("modals")), "class=\"dialog light\""))
+
+    click("#dark")
+
+    await sleep(1)
+
+    assert(contains(markup(byId("modals")), "class=\"dialog dark\""))
+
+@test
+async A_PORTALS_HANDLERS_WORK_AND_CLOSING_IT_EMPTIES_THE_CONTAINER()
+    fresh()
+
+    assertEq(says("said"), "hello")
+
+    click("#close")
+
+    await sleep(1)
+
+    assertEq(says("said"), "<gone>")
+    assertEq(markup(byId("modals")), "<div id=\"modals\"></div>")

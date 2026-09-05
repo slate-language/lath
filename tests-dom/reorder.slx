@@ -1,0 +1,105 @@
+import { createElement, Fragment, mount, flush, useState } from "../lath.slx"
+import { domHost } from "../dom.slx"
+import { byId, query, markup, setProperty } from slate:dom
+import { at, mutations, touched } from "./probe.slx"
+
+// A long list reordered, watched by the browser rather than by the framework.
+//
+// **`tests/reconcile.slx` counts what the host was ASKED for and this counts what the page
+// RECORDED**, and the two are different measurements: a host that was handed three operations and
+// then rebuilt the whole list would pass the first and fail the second. Both are needed, and this is
+// the one that cannot be written without a document.
+
+val rows = 1000
+
+names(shift: integer) -> array =
+    var out = []
+
+    for i in 0..<rows
+        push(out, "r" + string((i + shift) % rows))
+
+    out
+
+// The list, mounted into the page, and the setter that changes which rows there are.
+listing() -> object =
+    var setter = null
+
+    row(name) = <li key={name} id={"row-" + name}>{name}</li>
+
+    List(props: object) =
+        val [keys, set] = useState(names(0))
+
+        setter = set
+
+        <ul id="rows">{keys.map(row)}</ul>
+
+    at("")
+
+    { root: mount(<List/>, domHost("#page")), to: setter }
+
+@test
+async REORDERING_THREE_ROWS_OF_A_THOUSAND_IS_ONE_WRITE_AND_NOT_A_REBUILD()
+    // **THE BOUND IS ONE RECORD PER ROW, AND IT IS THE BOUND `slate:dom` IMPOSES RATHER THAN THE ONE
+    // THE FRAMEWORK EARNED.** The reconciler decides on three operations -- `tests/reconcile.slx`
+    // pins exactly which three -- and the DOM host has no `insertBefore` to apply them with, so it
+    // applies them to a list it keeps and writes that list with `replaceChildren`, which the browser
+    // records as every row leaving and arriving again.
+    //
+    // **It still has teeth**: the same list without keys records twice this, every row being torn
+    // down and built again, and the row identity the next test checks does not survive that.
+    val it = listing()
+
+    await sleep(1)
+
+    val records = mutations()
+
+    // The last three rows moved to the front, and nothing else changed.
+    it.to(names(rows - 3))
+
+    flush(it.root)
+
+    await sleep(1)
+
+    assert(mutations() - records <= rows + 2,
+        "reordering three rows recorded " + string(mutations() - records) + " mutations")
+
+@test
+async THE_ROWS_ARE_MOVED_AND_NOT_REBUILT()
+    // **Node identity is the thing a record count cannot say.** A row is marked by writing into it
+    // from outside the framework -- which lath knows nothing about -- so the mark survives a move and
+    // could not survive a rebuild.
+    val it = listing()
+
+    await sleep(1)
+
+    setProperty(byId("row-r0"), "innerHTML", "<b>marked</b>")
+
+    it.to(names(rows - 3))
+
+    flush(it.root)
+
+    await sleep(1)
+
+    assert(contains(markup(byId("rows")), "<b>marked</b>"), "the marked row was rebuilt")
+
+    // And it moved: three rows now stand in front of it.
+    assert(contains(markup(byId("rows")),
+        "<li id=\"row-r997\">r997</li><li id=\"row-r998\">r998</li><li id=\"row-r999\">r999</li>"))
+
+@test
+async A_RENDER_THAT_CHANGES_NOTHING_TOUCHES_THE_PAGE_NOT_AT_ALL()
+    // **The claim the whole diff rests on**, said where the browser can answer it: a re-render with
+    // the same rows is not a whole child list written back over itself.
+    val it = listing()
+
+    await sleep(1)
+
+    val moved = touched()
+
+    it.to(names(0))
+
+    flush(it.root)
+
+    await sleep(1)
+
+    assertEq(touched() - moved, 0)

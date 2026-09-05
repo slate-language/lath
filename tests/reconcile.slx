@@ -19,19 +19,20 @@ recorder() =
     // The node as it stands NOW, which is why it is taken before the operation is applied.
     name(node) = inner.serialise([node])
 
-    put(parent, node, before)
-        val where = if before == null then " at the end" else " before " + name(before)
+    // **The batch is written down one operation at a time**, which is what makes an expectation
+    // readable -- and the count of them is the count the host was handed.
+    patch(parent, ops)
+        for op in ops
+            if op.kind == "remove"
+                push(seen.ops, "remove " + name(op.node))
+            else
+                val where = if op.before == null then " at the end" else " before " + name(op.before)
 
-        push(seen.ops, "insert " + name(node) + where)
+                push(seen.ops, "insert " + name(op.node) + where)
 
-        inner.insert(parent, node, before)
+        inner.patch(parent, ops)
 
-    take(parent, node)
-        push(seen.ops, "remove " + name(node))
-
-        inner.remove(parent, node)
-
-    inner with { insert: put, remove: take, seen: seen }
+    inner with { patch: patch, seen: seen }
 
 // A list of keyed rows, and the setter that changes which rows there are.
 //

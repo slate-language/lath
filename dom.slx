@@ -109,38 +109,31 @@ export domHost(into: string) -> Host =
 
         fresh
 
-    // A node put in front of `before`, or at the end where that is `null`, and MOVED where the
-    // parent already holds it -- which is what `insertBefore` means and how a reorder is spelled.
+    // What changed about a parent's children, applied and then written once.
     //
-    // **`slate:dom` HAS NO `insertBefore`, so this rebuilds the whole child list.** The list is kept
-    // here rather than read back from the page, so the arithmetic is exact and cheap; what is not
-    // cheap is the last line, `setChildren` being `replaceChildren` and the only way this module has
-    // of changing what a node holds. So a reorder of three rows out of a thousand is three correct
-    // operations that each move a thousand nodes. **The framework above is already surgical** -- the
-    // recording host in `tests/host.slx` pins the exact operations -- and two names on `slate:dom`,
-    // an `insertBefore(parent, node, before)` and a `removeChild(parent, node)`, are the whole of
-    // what stands between that and a page that moves three nodes.
-    insertKid(parent: integer, node: integer, before) =
+    // **`slate:dom` HAS NO `insertBefore`, AND THAT IS WHY THIS TAKES A BATCH.** `setChildren` is
+    // `replaceChildren` and is the only way this module has of changing what a node holds, so the
+    // operations are applied to the list kept above -- ordinary arithmetic on integers -- and the
+    // page is written once at the end. Told one operation at a time, a list filled with a thousand
+    // rows would be a thousand whole-list writes.
+    //
+    // **What is still owed is the write itself**: a reorder of three rows out of a thousand is three
+    // correct operations and one `replaceChildren` of a thousand nodes. The framework above is
+    // already surgical -- `tests/reconcile.slx` pins the exact operations -- and two names on
+    // `slate:dom`, an `insertBefore(parent, node, before)` and a `removeChild(parent, node)`, are
+    // the whole of what stands between that and a page that moves three nodes.
+    patch(parent: integer, ops: array) =
         val list = held(parent)
-        val was = list.indexOf(node)
 
-        if was != null then removeAt(list, was)
+        for op in ops
+            val was = list.indexOf(op.node)
 
-        val to = if before == null then null else list.indexOf(before)
+            if was != null then removeAt(list, was)
 
-        if to == null then push(list, node) else insert(list, to, node)
+            if op.kind == "insert"
+                val to = if op.before == null then null else list.indexOf(op.before)
 
-        setChildren(parent, list)
-
-        null
-
-    removeKid(parent: integer, node: integer) =
-        val list = held(parent)
-        val at = list.indexOf(node)
-
-        if at == null then return null
-
-        removeAt(list, at)
+                if to == null then push(list, op.node) else insert(list, to, op.node)
 
         setChildren(parent, list)
 
@@ -220,7 +213,7 @@ export domHost(into: string) -> Host =
 
     { element: element, text: text, setProps: setProps, setText: setNodeText,
       serialise: serialise, drop: drop, mounted: mounted, adopt: adopt,
-      insert: insertKid, remove: removeKid, into: el, where: into }
+      patch: patch, into: el, where: into }
 
 // A handler by its React spelling, attached under the DOM's: `onClick` is `click`, and dropping the
 // `on` and lowering the letter after it is the whole of the translation.

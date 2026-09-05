@@ -23,6 +23,13 @@
 
 // A parent's children, changed from `old` to `next` with the fewest operations that will do it.
 //
+// **The host is handed the whole change at once and decides how to apply it**, which is what the
+// adapter's ninth function is. A host that can move one child walks the list; a host that can only
+// replace a whole child list -- which is every host built on `slate:dom` today, that module having
+// no `insertBefore` -- applies the operations to a list it keeps and writes it once. Telling a host
+// one operation at a time would make the second kind quadratic: a thousand rows filled one at a
+// time is a thousand whole-list writes.
+//
 // **The nodes are compared with `==` and that is why a string host's nodes carry an `id`.** slate's
 // equality is structural, so two `<li>` elements holding the same text would otherwise be the same
 // node to this function and a list of repeated rows would diff into nonsense. A DOM node is a handle
@@ -32,8 +39,10 @@ export patchKids(host: object, parent, old: array, next: array) =
     // lists are the same nodes in the same order and there is nothing at all for the host to do.
     if old == next then return null
 
+    var ops = []
+
     for node in old
-        if next.indexOf(node) == null then host.remove(parent, node)
+        if next.indexOf(node) == null then push(ops, { kind: "remove", node: node, before: null })
 
     // What survived, in the order the parent still holds it. Every position below is into this.
     var kept = []
@@ -60,10 +69,13 @@ export patchKids(host: object, parent, old: array, next: array) =
     var i = next.len() - 1
 
     while i >= 0
-        if pos[i] == null || !stays[i] then host.insert(parent, next[i], anchor)
+        if pos[i] == null || !stays[i]
+            push(ops, { kind: "insert", node: next[i], before: anchor })
 
         anchor = next[i]
         i = i - 1
+
+    if ops.len() > 0 then host.patch(parent, ops)
 
     null
 
