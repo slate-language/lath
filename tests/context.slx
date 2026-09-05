@@ -1,0 +1,119 @@
+import { createElement, Fragment, mount, html, flush, useState, createContext, useContext } from "../lath.slx"
+
+// Context -- a value handed to a whole subtree without being passed through everything in between.
+//
+// **`<Theme.Provider>` is a field selection inside a tag**, which is React's spelling and needs
+// nothing from slate that `<Menu.Item>` does not: the dot is left a token by the lexer and read the
+// ordinary way. That is the whole reason the provider is a field of the context rather than a second
+// name to import.
+
+val Theme = createContext("light")
+val Size = createContext(1)
+
+Shown(props: object) = <p class={useContext(Theme)}>{string(useContext(Size))}</p>
+
+// A component that mentions neither context, so that what reaches `Shown` reached it past a
+// component that knows nothing about any of this.
+Between(props: object) = <div>{props.children}</div>
+
+@test
+A_PROVIDER_REACHES_A_CONSUMER_THROUGH_COMPONENTS_THAT_KNOW_NOTHING_ABOUT_IT()
+    val root = mount(<Theme.Provider value="dark"><Between><Shown/></Between></Theme.Provider>)
+
+    assertEq(html(root), "<div><p class=\"dark\">1</p></div>")
+
+@test
+A_CONSUMER_WITH_NO_PROVIDER_ABOVE_IT_GETS_THE_DEFAULT()
+    // **The default is answered rather than faulting**, which is React's rule and the useful one: a
+    // component that reads a theme can be rendered on its own in a test. A context whose absence
+    // really is a mistake says so by making its default a value that complains.
+    assertEq(html(mount(<Shown/>)), "<p class=\"light\">1</p>")
+
+@test
+THE_NEAREST_PROVIDER_WINS()
+    val root = mount(
+        <Theme.Provider value="dark">
+            <Theme.Provider value="sepia"><Shown/></Theme.Provider>
+        </Theme.Provider>)
+
+    assertEq(html(root), "<p class=\"sepia\">1</p>")
+
+@test
+TWO_CONTEXTS_ARE_TWO_CONTEXTS()
+    // **A context is compared by identity and not by name**, so a program may make one per module and
+    // never arrange anything. Two providers of different contexts nest without knowing about each
+    // other.
+    val root = mount(
+        <Theme.Provider value="dark">
+            <Size.Provider value={3}><Shown/></Size.Provider>
+        </Theme.Provider>)
+
+    assertEq(html(root), "<p class=\"dark\">3</p>")
+
+@test
+A_PROVIDER_THAT_CHANGES_ITS_VALUE_RE_RENDERS_ITS_CONSUMERS()
+    // **The point of the whole feature.** A consumer holds no state of its own here, so if the change
+    // did not reach it the markup would simply not move.
+    var setter = null
+
+    App(props: object) =
+        val [theme, set] = useState("light")
+
+        setter = set
+
+        <Theme.Provider value={theme}><Between><Shown/></Between></Theme.Provider>
+
+    val root = mount(<App/>)
+
+    assertEq(html(root), "<div><p class=\"light\">1</p></div>")
+
+    setter("dark")
+    flush(root)
+
+    assertEq(html(root), "<div><p class=\"dark\">1</p></div>")
+
+@test
+A_CONSUMER_KEEPS_ITS_OWN_STATE_WHEN_THE_CONTEXT_CHANGES()
+    // A context change is an ordinary re-render and not a rebuild, which is what says the provider is
+    // a component like any other rather than something the reconciler treats specially.
+    var setTheme = null
+    var bump = null
+
+    Counting(props: object) =
+        val [n, set] = useState(0)
+
+        bump = set
+
+        <p class={useContext(Theme)}>{n}</p>
+
+    App(props: object) =
+        val [theme, set] = useState("light")
+
+        setTheme = set
+
+        <Theme.Provider value={theme}><Counting/></Theme.Provider>
+
+    val root = mount(<App/>)
+
+    bump(7)
+    flush(root)
+
+    assertEq(html(root), "<p class=\"light\">7</p>")
+
+    setTheme("dark")
+    flush(root)
+
+    assertEq(html(root), "<p class=\"dark\">7</p>")
+
+@test
+useContext_MAY_BE_CALLED_INSIDE_A_CONDITION_WHERE_A_HOOK_MAY_NOT()
+    // **It keeps no slot**, so unlike `useState` it is not found by the order it was called in. The
+    // name follows React's because everything else about it does.
+    Maybe(props: object) =
+        if props.ask then <p>{useContext(Theme)}</p> else <p>never asked</p>
+
+    val root = mount(<Theme.Provider value="dark"><Maybe ask={false}/></Theme.Provider>)
+
+    assertEq(html(root), "<p>never asked</p>")
+    assertEq(html(mount(<Theme.Provider value="dark"><Maybe ask={true}/></Theme.Provider>)),
+        "<p>dark</p>")

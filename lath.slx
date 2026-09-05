@@ -146,8 +146,8 @@ hookCell(fresh: object) -> object =
 // **`nodes` is what the host was last told this instance's children are**, and it is the other half
 // of the diff: a parent that does not remember what it put there can only replace the lot.
 instance(root: object, parent, el, kind: string) -> object =
-    { root: root, parent: parent, el: el, kind: kind, key: null, hooks: [], kids: [], nodes: [],
-      node: null, gone: false, epoch: -1, caught: null }
+    { root: root, parent: parent, el: el, kind: kind, key: null, hooks: [], kids: [], left: [],
+      nodes: [], node: null, gone: false, epoch: -1, caught: null }
 
 // What a child amounts to: nothing, a string, or an element.
 //
@@ -427,7 +427,14 @@ recoverAt(inst, e) -> boolean =
             for kid in at.kids
                 unmount(kid)
 
+            // **And the ones the render that faulted had not reached yet**, which are the children
+            // that were STANDING when it began: an effect they subscribed with is still installed,
+            // and nothing else is ever going to take it down.
+            for kid in at.left
+                unmount(kid)
+
             at.kids = []
+            at.left = []
             at.caught = e
 
             reconcileKids(at, [at.el.props.fallback(e)])
@@ -448,6 +455,13 @@ reconcileKids(inst: object, kids: array) =
     var used = []
     var next = []
 
+    // **The new list goes onto the instance BEFORE it is filled, and the old one is kept beside it.**
+    // A child that faults part of the way through leaves this loop unfinished, and an error boundary
+    // then has to take down what was built -- which it can only do if it can reach it. Without these
+    // two lines a failed render leaks every node it had made before it failed.
+    inst.kids = next
+    inst.left = old
+
     for i in 0..<wanted.len()
         val el = wanted[i]
         val found = takeMatch(old, used, el, i)
@@ -458,7 +472,7 @@ reconcileKids(inst: object, kids: array) =
     for i in 0..<old.len()
         if !contains(used, i) then unmount(old[i])
 
-    inst.kids = next
+    inst.left = []
 
     null
 
@@ -516,12 +530,21 @@ childNodes(inst: object) -> array =
 
 // A subtree that is no longer rendered: every effect it left behind is undone, deepest first.
 unmount(inst: object) =
+    // **Twice is once**, which is what lets the two lists below be walked without asking whether an
+    // instance is in both -- and asking would mean comparing two instances, which slate would do
+    // structurally through the root, the parent and every node under them.
+    if inst.gone then return null
+
     inst.gone = true
 
     // A portal's children stand in a container of their own, and this is what takes them out of it.
     if inst.kind == "portal" then patchKids(inst.root.host, inst.el.props.into, inst.nodes, [])
 
     for kid in inst.kids
+        unmount(kid)
+
+    // The children a render that faulted had not decided about yet. Empty every other time.
+    for kid in inst.left
         unmount(kid)
 
     for cell in inst.hooks

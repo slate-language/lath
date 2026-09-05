@@ -1,0 +1,149 @@
+import { createElement, Fragment, mount, html, flush, stringHost, useState,
+    createPortal } from "../lath.slx"
+
+// Portals -- a subtree rendered into a container somewhere else.
+//
+// **The container is the HOST's kind of node and not an element**, which is the one thing to know.
+// On a page it is what `byId` answers; here it is what `stringHost().element("div")` answers, and
+// asking the host to serialise it is how a test -- or a server -- finds out what went there.
+
+@test
+A_PORTALS_CHILDREN_STAND_IN_THE_CONTAINER_AND_NOT_WHERE_IT_WAS_WRITTEN()
+    val host = stringHost()
+    val aside = host.element("aside")
+
+    App(props: object) = <div>here{createPortal(<p>there</p>, aside)}</div>
+
+    val root = mount(<App/>, host)
+
+    // **The parent that wrote the portal is handed none of its nodes**, which is what lets a dialog
+    // written inside a table row escape the row.
+    assertEq(html(root), "<div>here</div>")
+    assertEq(host.serialise([aside]), "<aside><p>there</p></aside>")
+
+@test
+A_PORTALS_CONTENT_IS_RE_RENDERED_LIKE_ANYTHING_ELSE()
+    var setter = null
+
+    val host = stringHost()
+    val aside = host.element("aside")
+
+    App(props: object) =
+        val [n, set] = useState(0)
+
+        setter = set
+
+        <div>{createPortal(<p>{n}</p>, aside)}</div>
+
+    val root = mount(<App/>, host)
+
+    assertEq(host.serialise([aside]), "<aside><p>0</p></aside>")
+
+    setter(1)
+    flush(root)
+
+    assertEq(host.serialise([aside]), "<aside><p>1</p></aside>")
+    assertEq(html(root), "<div></div>")
+
+@test
+A_PORTAL_THAT_STOPS_BEING_RENDERED_TAKES_ITS_CONTENT_OUT_OF_THE_CONTAINER()
+    // **Nothing else would ever do it.** The container is not part of the tree, so a portal that
+    // simply vanished would leave what it put there on the page for the life of the program.
+    var setter = null
+
+    val host = stringHost()
+    val aside = host.element("aside")
+
+    App(props: object) =
+        val [shown, set] = useState(true)
+
+        setter = set
+
+        <div>{shown && createPortal(<p>there</p>, aside)}</div>
+
+    val root = mount(<App/>, host)
+
+    assertEq(host.serialise([aside]), "<aside><p>there</p></aside>")
+
+    setter(false)
+    flush(root)
+
+    assertEq(host.serialise([aside]), "<aside></aside>")
+
+@test
+A_PORTAL_GIVEN_A_DIFFERENT_CONTAINER_MOVES_RATHER_THAN_UPDATING_IN_PLACE()
+    var setter = null
+
+    val host = stringHost()
+    val first = host.element("aside")
+    val second = host.element("footer")
+
+    App(props: object) =
+        val [there, set] = useState(true)
+
+        setter = set
+
+        <div>{createPortal(<p>x</p>, if there then first else second)}</div>
+
+    val root = mount(<App/>, host)
+
+    assertEq(host.serialise([first]), "<aside><p>x</p></aside>")
+
+    setter(false)
+    flush(root)
+
+    assertEq(host.serialise([first]), "<aside></aside>")
+    assertEq(host.serialise([second]), "<footer><p>x</p></footer>")
+
+@test
+A_PORTAL_ON_A_STRING_HOST_RENDERS_INTO_THE_NODE_IT_WAS_GIVEN_AND_DOES_NOT_FAULT()
+    // **What a portal does on a string host, pinned rather than left to be discovered.** It renders
+    // into the node it was given, whatever that node is, and `html(root)` does not show it -- which
+    // is the honest answer rather than a fault: a portal is content put somewhere else, and where a
+    // server puts it is the server's business. `serialise` of the container is how it asks.
+    val host = stringHost()
+    val slot = host.element("section")
+
+    App(props: object) = <div>{createPortal(<p>x</p>, slot)}</div>
+
+    val root = mount(<App/>, host)
+
+    assertEq(html(root), "<div></div>")
+    assertEq(host.serialise([slot]), "<section><p>x</p></section>")
+
+@test
+A_COMPONENT_INSIDE_A_PORTAL_KEEPS_ITS_STATE_ACROSS_A_PARENT_RE_RENDER()
+    // A portal is an ordinary part of the tree with an unusual destination, so everything that is
+    // true of a subtree is true of one -- which is what says it is not a second rendering path.
+    var bump = null
+    var again = null
+
+    val host = stringHost()
+    val aside = host.element("aside")
+
+    Counting(props: object) =
+        val [n, set] = useState(0)
+
+        bump = set
+
+        <p>{n}</p>
+
+    App(props: object) =
+        val [t, set] = useState(0)
+
+        again = set
+
+        <div class={"t" + string(t)}>{createPortal(<Counting/>, aside)}</div>
+
+    val root = mount(<App/>, host)
+
+    bump(7)
+    flush(root)
+
+    assertEq(host.serialise([aside]), "<aside><p>7</p></aside>")
+
+    again(1)
+    flush(root)
+
+    assertEq(html(root), "<div class=\"t1\"></div>")
+    assertEq(host.serialise([aside]), "<aside><p>7</p></aside>")

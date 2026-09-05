@@ -45,7 +45,9 @@ listing(host, first: array) -> object =
 
         setter = set
 
-        <ul>{names.map(name -> <li key={name}>{name}</li>)}</ul>
+        row(name) = <li key={name}>{name}</li>
+
+        <ul>{names.map(row)}</ul>
 
     val root = mount(<List/>, host)
 

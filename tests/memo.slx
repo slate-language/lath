@@ -1,0 +1,232 @@
+import { createElement, Fragment, mount, html, flush, useState, useCallback, memo,
+    createContext, useContext } from "../lath.slx"
+
+// `memo` -- the one place the framework does not render.
+//
+// **Counting renders is the only way to test this**, exactly as counting host operations is the only
+// way to test the diff: a memoised component and an ordinary one produce identical markup, and the
+// difference is all the work that was not done.
+
+var renders = 0
+
+row(props: object) =
+    renders = renders + 1
+
+    <li>{props.name}</li>
+
+val Row = memo(row)
+
+// A shell that re-renders on demand, so that a child can be asked to render again without its own
+// props changing at all.
+shell(child) =
+    var setter = null
+
+    Shell(props: object) =
+        val [n, set] = useState(0)
+
+        setter = set
+
+        <ul>{child(n)}</ul>
+
+    val root = mount(<Shell/>)
+
+    { root: root, again: setter }
+
+@test
+A_MEMOISED_COMPONENT_IS_NOT_RENDERED_AGAIN_WHILE_ITS_PROPS_ARE_THE_SAME()
+    renders = 0
+
+    val it = shell(n -> <Row name="a"/>)
+
+    assertEq(renders, 1)
+
+    it.again(1)
+    flush(it.root)
+
+    assertEq(renders, 1)
+    assertEq(html(it.root), "<ul><li>a</li></ul>")
+
+@test
+AND_IS_RENDERED_AGAIN_THE_MOMENT_THEY_ARE_NOT()
+    // **The control.** Without it the count above could be one because nothing ever renders.
+    renders = 0
+
+    val it = shell(n -> <Row name={"a" + string(n)}/>)
+
+    assertEq(renders, 1)
+
+    it.again(1)
+    flush(it.root)
+
+    assertEq(renders, 2)
+    assertEq(html(it.root), "<ul><li>a1</li></ul>")
+
+@test
+PROPS_ARE_COMPARED_STRUCTURALLY_WHERE_REACT_COMPARES_FIELD_BY_FIELD_IDENTITY()
+    // **The package's standing divergence, read once more.** `{ size: 1 } == { size: 1 }` is true in
+    // slate and false in JavaScript, so an object rebuilt with the same fields is not a change -- and
+    // React needs a `useMemo` around exactly this prop to get the same answer.
+    renders = 0
+
+    val it = shell(n -> <Row name="a" opts={{ size: 1 }}/>)
+
+    it.again(1)
+    flush(it.root)
+
+    assertEq(renders, 1)
+
+@test
+A_HANDLER_REBUILT_EVERY_RENDER_IS_STILL_A_CHANGE_AND_useCallback_IS_WHAT_THAT_IS_FOR()
+    // **A function compares by identity even where an object does not**, which is the one place a
+    // slate reader's expectation and a React reader's meet: a fresh closure is a new prop.
+    renders = 0
+
+    var setter = null
+
+    Fresh(props: object) =
+        val [n, set] = useState(0)
+
+        setter = set
+
+        <ul><Row name="a" onPick={() -> n}/></ul>
+
+    val loose = mount(<Fresh/>)
+
+    setter(1)
+    flush(loose)
+
+    assertEq(renders, 2)
+
+    renders = 0
+
+    var again = null
+
+    Held(props: object) =
+        val [n, set] = useState(0)
+
+        again = set
+
+        val pick = useCallback(() -> null, [])
+
+        <ul><Row name="a" onPick={pick}/></ul>
+
+    val kept = mount(<Held/>)
+
+    again(1)
+    flush(kept)
+
+    assertEq(renders, 1)
+
+@test
+A_COMPARATOR_OF_YOUR_OWN_DECIDES_INSTEAD()
+    var count = 0
+
+    body(props: object) =
+        count = count + 1
+
+        <li>{props.name}</li>
+
+    // Only the `id` matters; the name may change all it likes and the row stays as it was.
+    val ById = memo(body, (was, now) -> was.id == now.id)
+
+    var setter = null
+
+    Shell(props: object) =
+        val [n, set] = useState(0)
+
+        setter = set
+
+        <ul><ById id={1} name={"a" + string(n)}/></ul>
+
+    val root = mount(<Shell/>)
+
+    setter(1)
+    flush(root)
+
+    assertEq(count, 1)
+    assertEq(html(root), "<ul><li>a0</li></ul>")
+
+@test
+A_PROVIDER_THAT_CHANGES_RENDERS_THROUGH_A_MEMO()
+    // **A deliberate pessimism, and the alternative is a great deal of machinery.** React subscribes
+    // each consumer to the contexts it reads so that a memoised component in between does not stop a
+    // change; this compares one counter, is never wrong, and costs a render only on the turn a
+    // provider actually changed value.
+    val Theme = createContext("light")
+
+    var count = 0
+
+    body(props: object) =
+        count = count + 1
+
+        <li>{useContext(Theme)}</li>
+
+    val Themed = memo(body)
+
+    var setter = null
+
+    App(props: object) =
+        val [theme, set] = useState("light")
+
+        setter = set
+
+        <Theme.Provider value={theme}><ul><Themed/></ul></Theme.Provider>
+
+    val root = mount(<App/>)
+
+    assertEq(count, 1)
+
+    // A render that changes no provider skips the memoised child as usual.
+    setter("light")
+    flush(root)
+
+    assertEq(count, 1)
+
+    setter("dark")
+    flush(root)
+
+    assertEq(count, 2)
+    assertEq(html(root), "<ul><li>dark</li></ul>")
+
+@test
+A_COMPARATOR_THAT_IS_NOT_A_FUNCTION_IS_REFUSED_WHERE_IT_IS_WRITTEN()
+    // **The error path, and where it fires is the point.** Refusing at `memo` names the line somebody
+    // wrote; refusing at the first render would name this package.
+    var said = ""
+
+    try
+        memo(row, 42)
+    catch e
+        said = e.message
+
+    assert(contains(said, "how two props compare"))
+    assert(contains(said, "42"))
+
+@test
+A_COMPARATOR_THAT_ANSWERS_SOMETHING_OTHER_THAN_A_BOOLEAN_IS_A_FAULT()
+    // **`0` is true in slate and false in JavaScript**, so a comparator ported from React that
+    // answers a count would skip every render here and be very hard to see. It says so instead.
+    val Odd = memo(row, (was, now) -> 0)
+
+    var setter = null
+
+    Shell(props: object) =
+        val [n, set] = useState(0)
+
+        setter = set
+
+        <ul><Odd name="a"/></ul>
+
+    val root = mount(<Shell/>)
+
+    var said = ""
+
+    setter(1)
+
+    try
+        flush(root)
+    catch e
+        said = e.message
+
+    assert(contains(said, "memo's comparator"))
+    assert(contains(said, "answered 0"))

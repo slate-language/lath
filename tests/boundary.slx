@@ -1,0 +1,226 @@
+import { createElement, Fragment, mount, html, flush, stringHost, useState, useEffect,
+    Boundary } from "../lath.slx"
+
+// Error boundaries -- a component that renders something else when its subtree faults.
+//
+// **A RENDER FAULT STAYS A FAULT.** slate's two channels decide that: a result is for a condition the
+// caller was always going to deal with, and a component that cannot render is a defect in the
+// program. So nothing here hands a component an `{ ok: false }` to inspect -- the fault unwinds to
+// the nearest boundary exactly as it would unwind to a `try`, which is what a boundary is.
+//
+// **And nothing is swallowed**: the fallback is called with the fault object, so a boundary that
+// shows nothing is one somebody wrote to show nothing.
+
+fell(f) -> string =
+    var said = ""
+
+    try
+        f()
+    catch e
+        said = e.message
+
+    said
+
+@test
+A_FAULT_IN_A_SUBTREE_RENDERS_THE_FALLBACK_WITH_THE_FAULT()
+    Boom(props: object)
+        throw "the row could not be drawn"
+
+    App(props: object) =
+        <div>
+            <Boundary fallback={(e) -> <p class="broken">{e.message}</p>}><Boom/></Boundary>
+        </div>
+
+    assertEq(html(mount(<App/>)), "<div><p class=\"broken\">the row could not be drawn</p></div>")
+
+@test
+THE_FAULT_OBJECT_IS_slates_OWN_AND_CARRIES_WHERE_IT_HAPPENED()
+    // `message`, `line` and `file` -- an ordinary slate fault and not something the framework invented,
+    // which is what lets a fallback report one the way anything else reports one.
+    var seen = null
+
+    Boom(props: object)
+        throw "gone"
+
+    look(e) =
+        seen = e
+
+        <p>caught</p>
+
+    mount(<Boundary fallback={look}><Boom/></Boundary>)
+
+    assertEq(seen.message, "gone")
+    assert(seen.line is integer)
+    assert(seen.file is string)
+
+@test
+THE_SUBTREE_THAT_FAILED_IS_TAKEN_DOWN_AND_NOT_LEFT_HALF_BUILT()
+    // **What was built before the fault is given back to the host**, which nothing on screen would
+    // show: a DOM host hands out a handle into a table it keeps, and a node nobody tells it about is
+    // a slot held for the life of the page.
+    val seen = { dropped: 0 }
+
+    dropped(node) =
+        seen.dropped = seen.dropped + 1
+
+        null
+
+    val host = stringHost() with { drop: dropped }
+
+    Fine(props: object) = <b>ok</b>
+
+    Boom(props: object)
+        throw "gone"
+
+    App(props: object) =
+        <div>
+            <Boundary fallback={(e) -> <p>caught</p>}><Fine/><Boom/></Boundary>
+        </div>
+
+    val root = mount(<App/>, host)
+
+    assertEq(html(root), "<div><p>caught</p></div>")
+
+    // The `<b>` and its text, both built before the second child faulted.
+    assertEq(seen.dropped, 2)
+
+@test
+A_FAULT_ON_A_LATER_RENDER_REACHES_THE_BOUNDARY_TOO()
+    // **A boundary that only caught the first render would be worth very little**, most faults being
+    // in the state a component has got itself into rather than in the state it started with.
+    var setter = null
+
+    Risky(props: object)
+        val [n, set] = useState(0)
+
+        setter = set
+
+        if n > 0
+            throw "it broke on the second render"
+
+        <p>fine</p>
+
+    App(props: object) =
+        <div><Boundary fallback={(e) -> <p>{e.message}</p>}><Risky/></Boundary></div>
+
+    val root = mount(<App/>)
+
+    assertEq(html(root), "<div><p>fine</p></div>")
+
+    setter(1)
+    flush(root)
+
+    assertEq(html(root), "<div><p>it broke on the second render</p></div>")
+
+@test
+A_BOUNDARY_THAT_HAS_CAUGHT_SOMETHING_KEEPS_SHOWING_THE_FALLBACK()
+    // Otherwise a parent re-rendering would try the failed subtree again, fault again, and do it on
+    // every render for the life of the page.
+    var made = 0
+    var setter = null
+
+    Boom(props: object)
+        made = made + 1
+
+        throw "gone"
+
+    App(props: object) =
+        val [n, set] = useState(0)
+
+        setter = set
+
+        <div class={"t" + string(n)}>
+            <Boundary fallback={(e) -> <p>caught</p>}><Boom/></Boundary>
+        </div>
+
+    val root = mount(<App/>)
+
+    assertEq(made, 1)
+
+    setter(1)
+    flush(root)
+
+    assertEq(made, 1)
+    assertEq(html(root), "<div class=\"t1\"><p>caught</p></div>")
+
+@test
+WITH_NO_BOUNDARY_ABOVE_IT_A_RENDER_FAULT_IS_AN_ORDINARY_FAULT()
+    // **The control, and the design.** A framework that caught everything by default would turn every
+    // defect into a blank corner of a page; a fault that nobody chose to catch reaches the program.
+    Boom(props: object)
+        throw "nothing caught this"
+
+    assert(contains(fell(() -> mount(<div><Boom/></div>)), "nothing caught this"))
+
+@test
+A_BOUNDARY_DOES_NOT_CATCH_ITS_OWN_FALLBACK()
+    // **React's rule for React's reason**: the fallback is this component's answer, so a boundary
+    // whose fallback faults has nothing left to answer with. Put a boundary above it -- which is
+    // exactly what the next test does.
+    Boom(props: object)
+        throw "gone"
+
+    bad(e)
+        throw "the fallback faulted too"
+
+    assert(contains(fell(() -> mount(<Boundary fallback={bad}><Boom/></Boundary>)),
+        "the fallback faulted too"))
+
+@test
+AND_A_BOUNDARY_ABOVE_IT_DOES()
+    Boom(props: object)
+        throw "gone"
+
+    bad(e)
+        throw "the fallback faulted too"
+
+    App(props: object) =
+        <Boundary fallback={(e) -> <p>{e.message}</p>}>
+            <Boundary fallback={bad}><Boom/></Boundary>
+        </Boundary>
+
+    assertEq(html(mount(<App/>)), "<p>the fallback faulted too</p>")
+
+@test
+A_BOUNDARY_WITH_NOTHING_TO_CATCH_IS_ITS_CHILDREN_AND_NOTHING_ELSE()
+    // It has no node of its own, so a boundary put around a table row does not become one.
+    val root = mount(<ul><Boundary fallback={(e) -> <li>caught</li>}><li>a</li><li>b</li></Boundary></ul>)
+
+    assertEq(html(root), "<ul><li>a</li><li>b</li></ul>")
+
+@test
+AN_EFFECTS_CLEANUP_IN_THE_FAILED_SUBTREE_STILL_RUNS()
+    // A subtree that rendered, committed, and faulted on a LATER render has effects standing, and
+    // taking it down has to undo them -- which is the whole reason `unmount` walks the tree.
+    var log = []
+    var setter = null
+
+    Sub(props: object)
+        useEffect(() -> subscribe(), [])
+
+        if props.broken
+            throw "gone"
+
+        <p>watching</p>
+
+    subscribe() =
+        push(log, "on")
+
+        () -> push(log, "off")
+
+    App(props: object) =
+        val [broken, set] = useState(false)
+
+        setter = set
+
+        <div><Boundary fallback={(e) -> <p>caught</p>}><Sub broken={broken}/></Boundary></div>
+
+    val root = mount(<App/>)
+
+    assertEq(log, ["on"])
+
+    setter(true)
+    flush(root)
+
+    assertEq(log, ["on", "off"])
+    assertEq(html(root), "<div><p>caught</p></div>")
