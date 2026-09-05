@@ -1,15 +1,10 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>slate counts</title>
-<style>
-  body { font: 16px/1.5 system-ui, sans-serif; margin: 3rem auto; max-width: 32rem; }
-  .counter { display: flex; align-items: center; gap: .5rem; margin: 1rem 0; padding: .5rem; }
-  .counter.dark { background: #222; color: #eee; }
-  .reading { font-size: 2rem; font-variant-numeric: tabular-nums; margin: 0; min-width: 4rem; }
-  .names ul { margin: 0 0 .5rem; padding-left: 1.25rem; }
-  .row { font-variant-numeric: tabular-nums; }
-  button { font: inherit; padding: .25rem .75rem; }
-</style>
+
+<!-- **There are no rules here.** The application's css is `app.css`, imported by `counter.slx` and
+     put on the page by `style(app)` -- so the markup and the rules that are about it travel together,
+     and a server rendering the same components writes the same `<style>` into what it sends. -->
 
 <div id="app"></div>
 

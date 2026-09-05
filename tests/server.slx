@@ -14,6 +14,24 @@ import { router, Link, Anything } from "../router.slx"
 // what a page would import; the difference is that the path arrives from a request here and from the
 // address bar there, and that difference is one argument.
 
+// **`listen` is not in the JavaScript back end yet**, so under `slate test --js` there is no server
+// for these to make and nothing here to check. **That is a `skip` and not a failure**: the tests are
+// right, the host is short of a name, and a suite that reported two reds for it every run would train
+// everybody reading the output to ignore two reds.
+//
+// **It is asked by TRYING, because there is nothing to ask.** A slate program has no name for which
+// back end it is running on -- deliberately, one program being the point -- so the question is put to
+// the thing itself, and the socket is closed again straight away.
+canListen() -> boolean =
+    var yes = true
+
+    try
+        close(serve(0, req -> ""))
+    catch e
+        yes = false
+
+    yes
+
 Home(props: object) = <p>home, and <Link to="/notes/7">a note</Link></p>
 
 Note(props: object) = <p>note {props.id}</p>
@@ -27,6 +45,8 @@ pageRoutes() =
 
 @test
 async A_PAGE_IS_RENDERED_ON_A_SERVER_BY_THE_SAME_ROUTER_A_BROWSER_WOULD_USE()
+    if !canListen() then skip("this host has no listener")
+
     // **`stringHost` is what `mount` takes when it is given no host**, so a server render needs no
     // second spelling: the same `mount(router(...))` a page writes answers markup here.
     val server = serve(0, req -> html(mount(router(pageRoutes(), req.path))))
@@ -49,6 +69,8 @@ async A_PAGE_IS_RENDERED_ON_A_SERVER_BY_THE_SAME_ROUTER_A_BROWSER_WOULD_USE()
 
 @test
 async A_QUERY_AND_A_TRAILING_SLASH_REACH_THE_SERVER_AND_CHANGE_NOTHING()
+    if !canListen() then skip("this host has no listener")
+
     // **`req.path` carries neither a query nor a fragment** -- `slate:http` splits them off -- but a
     // page's own path does carry a query, so the router has to cut for itself. Both ends land on the
     // same route, which is the assertion.

@@ -10,7 +10,7 @@
 // **Nothing here fakes anything.** jsdom builds the event, jsdom dispatches it, jsdom's own
 // `MutationObserver` counts what changed. This file is the wire, not the answer.
 
-import { byId, query, markup, nodeText, attribute, setProperty } from slate:dom
+import { byId, query, markup, nodeText, attribute, setProperty, release } from slate:dom
 
 // The page emptied, with whatever a server would have sent already inside the container.
 //
@@ -97,3 +97,30 @@ export says(id: string) -> string =
     val node = byId(id)
 
     if node == null then "<gone>" else nodeText(node)
+
+// The caret put in a node, by the browser.
+//
+// **The fourth thing `slate:dom` has no name for**, reached the same way the other three are: a
+// property whose setter, installed by the harness on `HTMLElement.prototype`, calls `focus()`. What
+// it is for is the claim a surgical reorder makes and a whole-list write cannot -- a row that moved
+// keeps the caret and a row that was rebuilt does not.
+export focus(node) =
+    setProperty(node, "lathFocus", true)
+
+    null
+
+// The id of the element the caret is in, or empty where it is nowhere. **Re-read after every
+// mutation**, so it answers what is true now and not what was true when something was focused.
+export active() -> string = attribute(probe(), "data-active") ?? ""
+
+// What the document's HEAD holds, as markup.
+//
+// **Where a stylesheet goes**, and the one place `shown()` cannot look: the container is in the body
+// and the observer watches the body, so a `<style>` put in the head is invisible to both.
+export inHead() -> string =
+    val node = query("head")
+    val out = markup(node)
+
+    release(node)
+
+    out

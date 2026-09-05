@@ -25,8 +25,8 @@
 // **There are no nested routes.** A nested router is a component that renders a router, which needs
 // nothing here and is what a page with a sidebar already writes.
 
-import { createElement, Element } from "./lath.slx"
-import { percentDecode, parseQuery } from slate:url
+import { createElement, Element, useState } from "./lath.slx"
+import { percentDecode, encodeComponent, parseQuery } from slate:url
 
 // A route: the template a path is matched against, and what to render when it does.
 //
@@ -52,6 +52,20 @@ export type Match = { params: object, query: object, path: string }
 // **A trailing slash is not a different route**, `/` itself excepted, because a person typing a URL
 // and a program building one disagree about it constantly and neither is wrong.
 export cleanPath(url: string) -> string =
+    var s = bareOf(url)
+
+    if s == "" then s = "/"
+    if len(s) > 1 && endsWith(s, "/") then s = s[0..<len(s) - 1]
+
+    s
+
+// The path as it STANDS, with the query and the fragment cut off and nothing else done to it.
+//
+// **This is not `cleanPath` and the difference is the point.** `cleanPath` normalises, because two
+// spellings of one route have to match the same template; a URL being rewritten has to keep the
+// spelling it had, or setting a query would quietly move a page from `/notes/` to `/notes` because
+// somebody typed in a search box.
+bareOf(url: string) -> string =
     var s = url
     val h = indexOf(s, "#")
 
@@ -61,10 +75,13 @@ export cleanPath(url: string) -> string =
 
     if q != null then s = s[0..<q]
 
-    if s == "" then s = "/"
-    if len(s) > 1 && endsWith(s, "/") then s = s[0..<len(s) - 1]
-
     s
+
+// The `#...` with its `#`, or empty where there is none -- so that rewriting a query keeps it.
+fragmentOf(url: string) -> string =
+    val h = indexOf(url, "#")
+
+    if h == null then "" else url[h..]
 
 // What followed the `?`, with the fragment already off. Empty where there was none.
 export searchOf(url: string) -> string =
@@ -86,6 +103,34 @@ export searchOf(url: string) -> string =
 // every framework reaches for is an array where a name repeats, which makes the TYPE of `q.name`
 // depend on what somebody put in a link.
 export parseSearch(s: string) -> object = parseQuery(s)
+
+// A record as the text that follows a `?`, which is `parseSearch` read backwards.
+//
+// **A field whose value is `null` is LEFT OUT**, which is how a name is taken out of a query: `set(q
+// with { term: null })` and `set(without(q, "term"))` write the same address, and neither of them
+// writes the four letters. `false` and `0` are values somebody chose and are written.
+//
+// **Every name and every value is percent-encoded**, `encodeComponent` leaving the unreserved set
+// alone and encoding the rest -- so a query holding an `&`, a `=` or a space survives being read
+// back by `parseSearch`.
+export encodeSearch(q: object) -> string =
+    var out = ""
+
+    for [name, value] in entries(q)
+        if value == null then continue
+
+        if out != "" then out = out + "&"
+
+        out = out + encodeComponent(name) + "=" + encodeComponent(string(value))
+
+    out
+
+// A URL with its query rewritten and everything else about it kept: the path as it was spelled, and
+// the fragment.
+export withSearch(url: string, q: object) -> string =
+    val search = encodeSearch(q)
+
+    bareOf(url) + (if search == "" then "" else "?" + search) + fragmentOf(url)
 
 // -- matching ------------------------------------------------------------------------------------
 
@@ -147,6 +192,13 @@ segmentsOf(path: string) -> array =
 // a missing route.
 export router(routes: array, at = null) -> Element =
     val url = at ?? "/"
+
+    // **Where the page is, remembered for `useSearch`.** A server hands this function the request's
+    // URL and a browser hands it the address bar's, and neither of them tells anything else -- so a
+    // component below that asks for the query would have nowhere to read it. This is that nowhere,
+    // and it is why a router and a query hook live in one file.
+    addressIs(url)
+
     val path = cleanPath(url)
     val query = parseSearch(searchOf(url))
 
@@ -181,6 +233,10 @@ export val LinkMark = "data-lath-link"
 var navigate = null
 
 // Tell every `Link` what to do instead of following.
+//
+// **The function is called `f(to, opts)`**, where `opts` of `{ push: false }` asks for the address
+// to be REWRITTEN rather than pushed. Nothing said is a push, which is what a link is and what every
+// caller written before there were two ways of moving meant.
 export navigateWith(f) =
     navigate = f
 
@@ -216,7 +272,8 @@ export Link(props: object) -> Element =
 
         e.prevent()
 
-        navigate(to)
+        // **A link PUSHES**, a place somebody went being exactly what the back button is for.
+        navigate(to, { push: true })
 
     var out = {}
 
@@ -228,3 +285,94 @@ export Link(props: object) -> Element =
     out["onClick"] = followed
 
     createElement("a", out, props.children ?? [])
+
+// -- the address, and the query as state ----------------------------------------------------------
+
+// Where the page is, as this module knows it.
+//
+// **One address, set from two directions, which is what makes a server and a browser agree.**
+// `router()` sets it from the URL it was handed -- a request's on a server, the address bar's on a
+// page -- and `lath/dom`'s `usePath` sets it from the browser on every render and every movement.
+// Neither end of this file knows which of the two it is looking at, and that is the whole point.
+//
+// **It is module state, so there is one of it per program**, which is `navigate` above read again: a
+// page has one address bar, and a program that wants two independent ones wants something else.
+var address = "/"
+
+// Tell this module where the page is. `lath/dom` calls it, `router()` calls it, and a program moving
+// the address itself calls it; nothing else has to.
+export addressIs(url: string) =
+    address = url
+
+    null
+
+// Where this module thinks the page is.
+export addressNow() -> string = address
+
+// The hook a page installs so that `useSearch` re-renders when the address moves.
+//
+// **It is `usePath`, and `lath/dom` installs it when that file is IMPORTED** -- not when a component
+// renders. So whether it is there is decided by which modules the program is made of, before a
+// single render, and it never changes while the program runs. That is what makes calling it inside
+// `useSearch` a stable hook slot rather than a hook inside a condition.
+var addressHook = null
+
+// Tell this module how to read the address bar and be told when it moves.
+export addressWith(f) =
+    addressHook = f
+
+    null
+
+// The URL's query as state: what it says now, and how to rewrite it.
+//
+//     val [q, setQuery] = useSearch()
+//
+//     <input value={q.term ?? ""} onInput={(e) -> setQuery(q with { term: e.value })}/>
+//     <button onClick={() -> setQuery(q with { page: 2 }, { push: true })}>next</button>
+//
+// **It is `useState`'s shape over the address bar rather than over a cell**, which is the whole
+// argument for it: a filter, a sort order, a page number or an open tab put here is a thing somebody
+// can bookmark, send to somebody else, and press back out of -- and one put in `useState` is a thing
+// that vanishes on reload and cannot be linked to.
+//
+// **`set` REWRITES the address and does not push, unless it is asked to.** `set(q, { push: true })`
+// pushes. The default is the one a search box needs: a push per keystroke would leave one history
+// entry per letter and getting off the page would take twenty presses of back. A page number is the
+// other case, and it asks.
+//
+// **A value of `null` takes the name out of the query**, which is `encodeSearch`'s rule.
+//
+// **On a server the query is the one `router()` was handed**, so a page rendered on a server and the
+// same page hydrated in a browser read the same record and the markup matches. That is why this
+// lives beside the router and not in `lath/dom`: `lath/dom` imports `slate:dom`, which works in one
+// host out of three, and a server rendering markup must not load it.
+export useSearch() -> array =
+    // **The slot is kept whether or not a page installed an address hook**, so that the two
+    // arrangements have the same hook layout and the second `useState` in a component lands in the
+    // same place either way. On a page it holds nothing and `usePath` is the state; where nothing
+    // reads an address bar -- a server, a test on the string host -- it IS the state, which is what
+    // makes `set` re-render there too.
+    val [kept, setKept] = useState(null)
+    val url = if addressHook != null then addressHook() else kept ?? address
+
+    // The address rewritten, which is the setter half of the pair.
+    //
+    // **It is built against the URL THIS RENDER saw**, not against whatever the address bar says
+    // when it is called, which is `useState`'s own rule: what a handler closed over is what the
+    // component was showing.
+    set(next, opts = null) =
+        if !(next is object)
+            throw "a query is a record of names and values, and this is " + string(next)
+
+        val to = withSearch(url, next)
+        val pushes = opts != null && opts.push == true
+
+        if navigate == null
+            addressIs(to)
+            setKept(to)
+        else
+            navigate(to, { push: pushes })
+
+        null
+
+    [parseSearch(searchOf(url)), set]

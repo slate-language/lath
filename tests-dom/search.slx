@@ -1,0 +1,133 @@
+import { createElement, Fragment, mount, hydrate, html, flush, useState } from "../lath.slx"
+import { useSearch } from "../router.slx"
+import { domHost } from "../dom.slx"
+import { location, pushPath, back } from slate:dom
+import { at, says, shown, mutations } from "./probe.slx"
+
+// `useSearch()` against a real address bar -- which is the half `slate test tests` cannot reach.
+//
+// **What is here and nowhere else: the history.** Whether rewriting a query leaves an entry behind is
+// not a thing a string can be asked; it is `replaceState` against `pushState`, and the only way to
+// tell them apart is to press back and see where you land. That is the whole reason this file exists.
+//
+// **`useSearch` is `usePath` underneath on a page**, joined by the line at the bottom of `dom.slx` --
+// so importing that file is what makes the hook read a browser at all, and this file imports it.
+
+// What the component below was handed, so that a test can use it.
+var setQ = null
+
+View(props: object) =
+    val [q, set] = useSearch()
+
+    setQ = set
+
+    <p id="view">{q.term ?? "none"}</p>
+
+// The page emptied and the view mounted, with the address bar put where the test says -- so that a
+// test states where it starts rather than inheriting where the last one finished.
+fresh(from: string) =
+    pushPath(from)
+    at("")
+
+    mount(<View/>, domHost("#page"))
+
+@test
+THE_QUERY_IS_THE_ADDRESS_BARS()
+    fresh("/notes?term=cats")
+
+    assertEq(says("view"), "cats")
+
+@test
+async SET_REWRITES_THE_ADDRESS_AND_RENDERS_THE_NEW_QUERY()
+    fresh("/notes?term=cats")
+
+    setQ({ term: "dogs" })
+
+    await sleep(1)
+
+    assertEq(location().path, "/notes")
+    assertEq(location().query, "?term=dogs")
+    assertEq(says("view"), "dogs")
+
+@test
+async A_REWRITE_LEAVES_NO_HISTORY_ENTRY_AND_A_PUSH_LEAVES_ONE()
+    // **THE ASSERTION THE WHOLE DEFAULT WAS CHOSEN FOR.** A search box that pushed would leave one
+    // entry per letter, and getting off the page would take twenty presses of back. A page number is
+    // the other case and asks for a push -- and the difference between them is exactly what pressing
+    // back finds.
+    pushPath("/before-a")
+
+    fresh("/notes?term=cats")
+
+    setQ({ term: "dogs" })
+
+    await sleep(1)
+
+    assertEq(location().query, "?term=dogs")
+
+    back()
+
+    await sleep(50)
+
+    // Straight past the rewrite to what was there before the page: the rewrite added nothing.
+    assertEq(location().path, "/before-a")
+
+@test
+async AND_A_PUSH_IS_WHAT_THE_BACK_BUTTON_UNDOES()
+    pushPath("/before-b")
+
+    fresh("/notes?term=cats")
+
+    setQ({ term: "dogs" }, { push: true })
+
+    await sleep(1)
+
+    assertEq(location().query, "?term=dogs")
+    assertEq(says("view"), "dogs")
+
+    back()
+
+    await sleep(50)
+
+    // **Back to the query and not off the page**, and the view followed it -- which is `popstate`
+    // reaching a component that never mentioned one.
+    assertEq(location().path, "/notes")
+    assertEq(location().query, "?term=cats")
+    assertEq(says("view"), "cats")
+
+@test
+async A_NAME_TAKEN_OUT_LEAVES_NO_QUESTION_MARK_BEHIND()
+    fresh("/notes?term=cats")
+
+    setQ({})
+
+    await sleep(1)
+
+    assertEq(location().query, "")
+    assertEq(location().path, "/notes")
+    assertEq(says("view"), "none")
+
+@test
+async THE_SERVERS_MARKUP_AND_THE_PAGES_AGREE()
+    // **The claim `useSearch` was put beside the router for.** A server renders from the URL it was
+    // asked for and a page renders from the address bar; if the two could disagree, the markup a
+    // server sent and the tree a browser hydrates against would differ -- and hydration would fault
+    // instead of adopting.
+    pushPath("/notes?term=cats")
+
+    val sent = html(mount(<View/>))
+
+    assertEq(sent, "<p id=\"view\">cats</p>")
+
+    at(sent)
+
+    await sleep(1)
+
+    val records = mutations()
+
+    hydrate(<View/>, domHost("#page"))
+
+    await sleep(1)
+
+    assertEq(mutations() - records, 0)
+    assertEq(says("view"), "cats")

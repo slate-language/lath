@@ -32,8 +32,8 @@ WHAT_IS_NOT_ONE_IS_REFUSED_BY_THE_SAME_TEST()
     assert(!({ type: "p" } is Element))
     assert(!({} is Host))
 
-    // **A host missing ONE of the nine is not a Host**, which is the check `domHost` carries as a
-    // result annotation -- an adapter with one implementation is a guess, and this one needed three
+    // **A host missing ONE of the ten is not a Host**, which is the check `domHost` carries as a
+    // result annotation -- an adapter with one implementation is a guess, and this one needed four
     // more functions than it shipped with.
     val short = stringHost() with { mounted: null }
 
@@ -42,3 +42,6 @@ WHAT_IS_NOT_ONE_IS_REFUSED_BY_THE_SAME_TEST()
     // And the one the diff changed, checked the same way: a host that cannot be told what changed
     // about a child list is not a host any more.
     assert(!(stringHost() with { patch: null } is Host))
+
+    // And the one 0.5.0 added: a host that cannot be told which stylesheets a render asked for.
+    assert(!(stringHost() with { styles: null } is Host))

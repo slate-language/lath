@@ -10,8 +10,10 @@
 //     slate js examples/web/counter.slx -o examples/web/counter.js
 
 import { createElement, Fragment, mount, useState, useContext, createContext,
-    memo } from "../../lath.slx"
+    memo, style } from "../../lath.slx"
 import { domHost } from "../../dom.slx"
+import { useSearch } from "../../router.slx"
+import app from "./app.css"
 
 // A value handed to a whole subtree without being passed through everything in between.
 //
@@ -53,11 +55,23 @@ Names(props: object) =
         <button onClick={rotate}>rotate</button>
     </div>
 
+// **The theme lives in the URL and not in a `useState`**, which is what `useSearch` is for: a page
+// showing the dark theme is a page you can bookmark, send to somebody, and press back out of.
+//
+// `set` rewrites the address rather than pushing, so flipping the theme ten times does not put ten
+// entries in the history. `{ push: true }` is how a thing that IS a place somebody went asks for the
+// other behaviour.
 App(props: object) =
-    val [theme, setTheme] = useState("light")
+    // **The application's stylesheet, registered once for the page.** `index.html` carries no rules
+    // at all: this is what puts them there, and a server rendering the same components would write
+    // the same `<style>` into the markup it sends.
+    style(app)
+
+    val [q, setQuery] = useSearch()
+    val theme = if q.theme == "dark" then "dark" else "light"
 
     swap() =
-        setTheme(if theme == "light" then "dark" else "light")
+        setQuery(q with { theme: if theme == "light" then "dark" else "light" })
 
     <Theme.Provider value={theme}>
         <h1>slate counts</h1>

@@ -1,4 +1,4 @@
-import { createElement, Fragment, mount, hydrate, html, flush, stringHost, useState } from "../lath.slx"
+import { createElement, Fragment, mount, hydrate, html, flush, stringHost, style, useState } from "../lath.slx"
 
 // Hydration: the same render, taking the nodes already there instead of creating them.
 //
@@ -30,7 +30,7 @@ words(s: string) -> object = { id: fresh(), tag: null, attrs: {}, kids: [], text
 
 // A host over a page the test built, counting everything it was asked to change.
 pageHost(top: array) =
-    val seen = { made: 0, wrote: 0, put: 0, took: 0, text: 0, mounts: 0 }
+    val seen = { made: 0, wrote: 0, put: 0, took: 0, text: 0, mounts: 0, styles: 0, sheets: [], adopted: [] }
     val root = tag("#root", {}, top)
 
     made(node) =
@@ -106,9 +106,18 @@ pageHost(top: array) =
 
         { node: node, tag: node.tag, text: node.text ?? "" }
 
+    // **Counted rather than applied**, which is the same measurement the rest of this host makes: a
+    // hydrating render must ask for nothing at all, the markup it is standing on already carrying a
+    // `<style>` for every sheet the first render registers.
+    styles(list: array) =
+        seen.styles = seen.styles + 1
+        seen.sheets = list
+
+        null
+
     { element: element, text: text, setProps: setProps, setText: setNodeText,
       serialise: serialise, drop: drop, mounted: mounted, adopt: adopt,
-      patch: patch, where: "page", seen: seen }
+      patch: patch, styles: styles, where: "page", seen: seen }
 
 isOn(name: string) -> boolean =
     name.len() > 2 && name[0..<2] == "on" && name[2] == name[2].upper()
@@ -283,3 +292,49 @@ A_HYDRATED_TREE_STILL_RENDERS_WHEN_ITS_STATE_CHANGES()
     assertEq(host.seen.made, 0)
     assertEq(host.seen.text, 0)
     assertEq(host.serialise([host.adopt(null, 0).node]), "<p>0</p>")
+
+@test
+A_HYDRATING_RENDER_HANDS_ITS_SHEETS_OVER_LIKE_ANY_OTHER()
+    // **The stylesheets are already on the page, and writing them again is the one thing a hydrated
+    // page must not do** -- a duplicated rule is worse than a wasted write, because it changes what
+    // the cascade does. **What makes that free is the host and not a flag**: it is handed the list
+    // and compares it against what the page carries, which is the rule `setProps` and `setText`
+    // already follow. `tests-dom/style.slx` is where that comparison is measured against a real
+    // document; what this pins is the framework's half -- one call per change to the list, and the
+    // WHOLE list every time, so that a host has something to compare against.
+    var setter = null
+
+    Styled(props: object) =
+        val [open, setOpen] = useState(false)
+
+        setter = setOpen
+
+        style(".a { color: red; }")
+
+        if open then style(".b { color: blue; }")
+
+        <p class="a">hello<b>there</b></p>
+
+    val host = pageHost(page())
+    val root = hydrate(<Styled/>, host)
+
+    // **Told once, on the hydrating commit, exactly as a mounting one is told.** What makes that
+    // free is the HOST: it compares the list against what the page already carries and writes
+    // nothing, which is the same rule that keeps an attribute already right from being written
+    // again. This host records the call so that the count below means something.
+    assertEq(host.seen.styles, 1)
+    assertEq(host.seen.sheets, [".a { color: red; }"])
+
+    // A render after the hydrating one that registers nothing new asks for nothing either.
+    setter(false)
+    flush(root)
+
+    assertEq(host.seen.styles, 1)
+
+    // And one that registers a new sheet is handed the WHOLE list, the newest last -- which is what
+    // lets a host work out for itself which of them the page already carries.
+    setter(true)
+    flush(root)
+
+    assertEq(host.seen.styles, 2)
+    assertEq(host.seen.sheets, [".a { color: red; }", ".b { color: blue; }"])

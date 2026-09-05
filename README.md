@@ -57,7 +57,9 @@ the line that is wrong is the one in your own program.
 | `html(root)` | the tree as markup — the string host's answer |
 | `stringHost()` | the default host |
 | `domHost(selector)` | the other one, in `lath/dom` — a real page |
+| `style(css)` | a component's stylesheet, registered once for the page |
 | `router(routes, at)`, `Link` | one URL, one view, in `lath/router` |
+| `useSearch()` | the URL's query as state, in `lath/router` |
 | `usePath()` | the address bar as state, in `lath/dom` |
 
 ## Three modules, and the splits are not cosmetic
@@ -82,6 +84,67 @@ mount(<Counter/>, domHost("#app"))
 Then `slate js app.slx -o app.js` and a `<script src="app.js">` beside a `<div id="app">`. The
 emitted file is self-contained — the slate runtime, this framework and the program in one — so there
 is no bundler and nothing to install.
+
+## Stylesheets
+
+**A component registers the css it needs and the framework puts it on the page once.** The
+stylesheet is a file — imported, not quoted — so it stays something an editor highlights and a
+browser's dev tools understand.
+
+```
+import { createElement, Fragment, mount, style } from lath
+import card from "./card.css"
+
+Card(props) =
+    style(card)
+
+    <div class="card"><h2>{props.title}</h2>{props.children}</div>
+```
+
+`import card from "./card.css"` is [slate's asset
+import](https://github.com/slate-language/slate/blob/dev/docs/reference/modules.md): any extension
+that is not `.sl` or `.slx` is a file read while the program is compiled and handed over as one
+string. It travels inside the program, so there is nothing to install beside the binary and nothing
+to fetch at run time, and six components importing one sheet is one string.
+
+**Modern css, and no preprocessor.** Native nesting, custom properties, `@media` and the rest are the
+browser's own now; there is no SCSS step here and nothing to configure.
+
+**It is registered once per DISTINCT SHEET, not once per component and not once per render.** The
+list is deduplicated by the css itself, which is what makes calling `style` at the top of every
+render the right thing to write: a list of fifty cards is one `<style>`.
+
+**It is not a hook.** It keeps no slot, so unlike `useState` it may be called inside a condition —
+which is the point, a component that only sometimes renders the thing the sheet is about being the
+ordinary case.
+
+**Where it lands depends on the host, and the two answers are the two places a stylesheet can go.**
+
+| | |
+|---|---|
+| `html(root)` where the tree has a `<head>` | one `<style>` per sheet at the end of the head |
+| `html(root)` where it does not — a fragment | one `<style>` per sheet in front of the markup |
+| a page | one `<style>` per sheet in the document's head, injected once |
+
+The fragment answer is what makes `html(root)` one self-contained string: drop it in a `<div>` and
+the rules arrive before the elements they are about.
+
+**A hydrated page writes none of them.** The `<style>` the server sent is already there, so the host
+compares before it writes and the page makes no mutations at all — the same rule that keeps an
+attribute already right from being written again. A server's sheets standing inside the container are
+kept there across every later render, so a change at the top of the tree does not take a page's
+stylesheets off it.
+
+**There is no way to take a sheet back, deliberately.** A sheet is registered by a component that
+*uses* it and deduplicated across every component that does, so nothing knows when the last user has
+gone; removing one on unmount would strip the rules out from under whoever else asked for them. A
+page's stylesheets grow to the set of components it has rendered and stop there.
+
+**Two things are refused.** A sheet that is not text — which is a mistake about the import, and the
+fault says so rather than complaining about a string three lines later. And a sheet containing
+`</style`, which is the one string that could end the element it is written in: the css is written
+raw, because a `>` in a child selector and an `&` in a `content:` string are ordinary css and both
+would break if the text were escaped.
 
 ## The router
 
@@ -134,6 +197,40 @@ mount(<App/>, domHost("#app"))
 
 **No nested routes in this version.** A nested router is a component that renders a router, which
 needs nothing from here.
+
+### `useSearch()` — the query as state
+
+`useState`'s shape over the address bar. What it is for is that a filter, a sort order, a page number
+or an open tab put here is something somebody can bookmark, send to somebody else, and press back out
+of — and the same thing put in `useState` vanishes on reload and cannot be linked to.
+
+```
+import { useSearch } from lath/router
+
+Filter(props) =
+    val [q, setQuery] = useSearch()
+
+    <>
+        <input value={q.term ?? ""} onInput={(e) -> setQuery(q with { term: e.value })}/>
+        <button onClick={() -> setQuery(q with { page: "2" }, { push: true })}>next page</button>
+        <button onClick={() -> setQuery(without(q, "term"))}>clear</button>
+    </>
+```
+
+**`set` REWRITES the address and does not push, unless it is asked to.** That default is the one a
+search box needs: a push per keystroke would leave one history entry per letter and getting off the
+page would take twenty presses of back. A page number is the other case, and `{ push: true }` is how
+it says so.
+
+**A value of `null` takes the name out of the query**, so `set(q with { term: null })` and
+`set(without(q, "term"))` write the same address. Nothing is written as the four letters.
+
+**On a server the query is the one `router()` was handed**, which is why this lives in `lath/router`
+and not in `lath/dom`: a server render and the page that hydrates it read the same record, so the
+markup matches. On a page it is `usePath` underneath — the address bar, and the back button with it.
+
+**The path and the fragment are kept exactly as they were spelled.** A trailing slash is not a
+different route to the *router*, and it is not something a search box is allowed to change either.
 
 ## Context, memo, boundaries and portals
 
@@ -239,12 +336,12 @@ without saying so.
 ## The host is behind an adapter, and there are two of them
 
 Nothing in the reconciler knows what a node is. `stringHost` builds plain objects and serialises
-them; `domHost` creates real elements through the same nine functions — `element`, `text`,
-`setProps`, `setText`, `serialise`, `drop`, `mounted`, `adopt` and `patch`. **So one set of
+them; `domHost` creates real elements through the same ten functions — `element`, `text`,
+`setProps`, `setText`, `serialise`, `drop`, `mounted`, `adopt`, `patch` and `styles`. **So one set of
 components renders to HTML on a server and into the document in a browser**, which is the thing that
 makes this worth writing in slate rather than reaching for React.
 
-**Three of the nine were added by writing a second implementation and then a third use**, which is
+**Four of the ten were added by writing a second implementation and then a third use**, which is
 the general lesson: an adapter with one implementation is a guess. It shipped with six.
 
 **`adopt(parent, index)` is the newest**, and it is what hydration is: *give me the child that is
@@ -327,13 +424,18 @@ host sets it as one, which is what keeps a re-render from freezing a field someb
 
 ## Running the tests
 
-**Two commands, and the second one needs a document.**
+**Three commands, and the last one needs a document.**
 
 ```
 slate test tests
+slate test --js tests
 npm install
 NODE_OPTIONS="--import ./tests-dom/setup.mjs" slate test --js tests-dom
 ```
+
+The second runs the same suite on the JavaScript back end, which is worth having because that is
+where a page actually runs. Two of its tests need a socket, which that back end has not got yet, and
+they say so with `skip` rather than failing — `tests/server.slx` asks by trying.
 
 They are written in slate and run by slate's own runner, which is how anybody using this package
 would run their own.
@@ -352,23 +454,28 @@ written beside it.
 
 ## Requirements
 
-slate **0.0.28** or newer, unchanged in lath 0.4.0. Three things arrived in that release for this
-package: **`slate:url`**, so that the percent-coder a router needs can be imported by a page without
-dragging a whole HTTP server in with it; **`mods` and `button` on a handler's event record**, without
-which `Link` could not tell a plain click from a cmd-click; and **`children`, `tagName`, `nodeText`
-and `attribute` on `slate:dom`**, without which nothing could read a page at all and `hydrate` could
-not exist.
+slate **0.0.30** or newer as of lath 0.5.0, and the floor moved because two things in that release
+are what this version is made of. **Asset imports** — `import styles from "./card.css"`, the file
+read while the program is compiled and travelling inside it — are where `style(css)` gets a
+stylesheet from, and without them a sheet would have to be a quoted blob in the middle of a
+component. **`insertBefore` and `removeChild` on `slate:dom`** are what let the DOM host apply the
+reconciler's operations as operations: reordering three rows of a thousand was three correct
+decisions and one `replaceChildren` of a thousand nodes until 0.0.30, and is now six mutation records
+and nothing for the rows that stayed.
 
-**`Host`'s `setKids` became `patch` in 0.4.0**, which is the one breaking change: a host of your own
-is now told what CHANGED about a parent's children — `{ kind: "remove", node }` and
-`{ kind: "insert", node, before }`, in order — rather than being handed the whole list. It is still
-nine functions, and `stringHost() with { … }` still gets the rest for free.
+**`Host` grew a tenth function in 0.5.0**, `styles(sheets)`, which is the one change a host of your
+own has to make. It is handed the whole list of distinct stylesheets whenever that list grows, and it
+is expected to compare before it writes — which is the rule `setProps` and `setText` already follow
+and is what keeps a hydrated page from writing a sheet the server already sent. `stringHost() with
+{ … }` still gets the rest for free.
 
-**What a real diff is still owed, and it is not this package's to give.** `slate:dom` can set a whole
-child list and nothing smaller, so the DOM host applies the operations to a list it keeps and writes
-that list with `replaceChildren`: reordering three rows of a thousand is three correct operations and
-one write of a thousand nodes. An `insertBefore` and a `removeChild` on `slate:dom` are the whole of
-what stands between that and a page that moves three nodes.
+**`Host`'s `setKids` became `patch` in 0.4.0**, which was that version's one breaking change: a host
+of your own is told what CHANGED about a parent's children — `{ kind: "remove", node }` and
+`{ kind: "insert", node, before }`, in order — rather than being handed the whole list.
+
+The floor was 0.0.28 before that, for **`slate:url`**, for **`mods` and `button` on a handler's event
+record**, and for **`children`, `tagName`, `nodeText` and `attribute` on `slate:dom`** — without
+which nothing could read a page at all and `hydrate` could not exist.
 
 The floor before that was 0.0.9, for the two exported types — a `type` declaration could not name one
 imported from another file before it, so `type Rendered = { el: Element }` in your own code would not
@@ -386,10 +493,11 @@ box(props: object) -> Element = <div class="box">{props.title}</div>
 myHost() -> Host = stringHost() with { serialise: countingSerialise }
 ```
 
-**`Host` is the nine functions an adapter answers**, and annotating one with it is the only check
+**`Host` is the ten functions an adapter answers**, and annotating one with it is the only check
 there is that it is whole — this package shipped an adapter with six, needed eight to render into a
-document and nine to adopt one, and not one of the three was guessable from the first implementation.
-`domHost` carries `-> Host` for exactly that reason.
+document, nine to adopt one and ten to put a stylesheet where a stylesheet goes, and not one of the
+four was guessable from the first implementation. `domHost` carries `-> Host` for exactly that
+reason.
 
 ## Licence
 

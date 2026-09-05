@@ -1,0 +1,21 @@
+/* A component's stylesheet, imported by the component that needs it.
+ *
+ * Modern css, with native nesting: there is no build step here and no preprocessor, because a
+ * browser does this itself now. */
+
+.lath-card {
+    --pad: 12px;
+
+    border: 1px solid rgb(0 0 0 / 0.14);
+    border-radius: 10px;
+    padding: var(--pad);
+
+    & > h2 {
+        margin: 0 0 var(--pad);
+        font: 600 1rem/1.3 system-ui, sans-serif;
+    }
+
+    &:hover {
+        border-color: rgb(0 0 0 / 0.34);
+    }
+}

@@ -1,0 +1,206 @@
+import { createElement, Fragment, mount, html, flush, useState } from "../lath.slx"
+import { router, useSearch, encodeSearch, withSearch, parseSearch, searchOf, navigateWith,
+    addressIs, addressNow, Anything } from "../router.slx"
+
+// `useSearch()` -- the URL's query as state.
+//
+// **WHAT IS CHECKED HERE IS THE HALF THAT HAS NO ADDRESS BAR**, which is a server's half and is the
+// larger one: the query a component reads is the one the router matched, `set` rewrites it, and the
+// component that asked is rendered again. `tests-dom/search.slx` is the other half -- a real address
+// bar, a real back button, and the history entry a replace does not leave.
+//
+// **`navigate` and the address are module state, so every test here puts them back.** A page has one
+// address bar and a suite has many tests.
+
+// What the component below last saw, and the setter it was handed. **Module state and not a return
+// value**, a component answering an element and nothing else.
+var seen = null
+var setQ = null
+
+Filter(props: object) =
+    val [q, set] = useSearch()
+
+    seen = q
+    setQ = set
+
+    <p>{q.term ?? "none"}</p>
+
+// A view that reads the query BOTH ways: the record the router handed it, and the hook.
+Both(props: object) =
+    val [q, set] = useSearch()
+
+    seen = { fromView: props.query, fromHook: q }
+
+    <p>both</p>
+
+routes() -> array =
+    [{ path: "/notes", view: (m) -> <Filter/> },
+     { path: "/both", view: (m) -> <Both query={m.query}/> },
+     { path: Anything, view: (m) -> <Filter/> }]
+
+// The message a call left behind, or empty where it did not fault.
+fell(f) -> string =
+    var said = ""
+
+    try
+        f()
+    catch e
+        said = e.message
+
+    said
+
+// -- reading it ------------------------------------------------------------------------------------
+
+@test
+THE_QUERY_IS_THE_ONE_THE_ROUTER_MATCHED()
+    val root = mount(router(routes(), "/notes?term=cats&page=2"))
+
+    assertEq(html(root), "<p>cats</p>")
+    assertEq(seen.term, "cats")
+    assertEq(seen.page, "2")
+
+@test
+NO_QUERY_AT_ALL_IS_AN_EMPTY_RECORD_AND_NOT_A_FAULT()
+    val root = mount(router(routes(), "/notes"))
+
+    assertEq(html(root), "<p>none</p>")
+    assertEq(seen, {})
+
+@test
+THE_VIEWS_RECORD_AND_THE_HOOK_ARE_THE_SAME_QUERY()
+    // **This is the SSR half of "a server and a page agree", said where it can be asked.** A route
+    // view is handed `m.query` and a component three levels down asks for it with a hook; if those
+    // two could differ, a server's markup and the tree a browser hydrates against would differ.
+    mount(router(routes(), "/both?a=1&b=two+words"))
+
+    assertEq(seen.fromHook, seen.fromView)
+    assertEq(seen.fromHook.b, "two words")
+
+@test
+THE_FRAGMENT_IS_NOT_PART_OF_THE_QUERY()
+    mount(router(routes(), "/notes?term=cats#top"))
+
+    assertEq(seen.term, "cats")
+
+// -- writing it ------------------------------------------------------------------------------------
+
+@test
+SET_REWRITES_THE_ADDRESS_AND_RENDERS_THE_COMPONENT_AGAIN()
+    // **With nothing installed to move an address bar there is still a re-render**, which is what a
+    // string host and a test see -- and what says the hook is state and not a reading.
+    navigateWith(null)
+
+    val root = mount(router(routes(), "/notes?term=cats"))
+
+    setQ({ term: "dogs" })
+    flush(root)
+
+    assertEq(html(root), "<p>dogs</p>")
+    assertEq(addressNow(), "/notes?term=dogs")
+
+@test
+A_NAME_SET_TO_null_LEAVES_THE_QUERY()
+    navigateWith(null)
+
+    val root = mount(router(routes(), "/notes?term=cats&page=2"))
+
+    setQ(seen with { term: null })
+    flush(root)
+
+    assertEq(html(root), "<p>none</p>")
+    assertEq(addressNow(), "/notes?page=2")
+
+@test
+THE_PATH_AND_THE_FRAGMENT_SURVIVE_A_REWRITE()
+    navigateWith(null)
+
+    val root = mount(router(routes(), "/notes/?term=cats#top"))
+
+    setQ({ term: "dogs" })
+    flush(root)
+
+    // **The trailing slash is kept**, `cleanPath` being for matching and not for rewriting: a page
+    // must not move because somebody typed in a search box.
+    assertEq(addressNow(), "/notes/?term=dogs#top")
+
+@test
+SET_REPLACES_BY_DEFAULT_AND_PUSHES_WHEN_ASKED()
+    // **The seam is the same one `Link` uses**, and this is what says the two callers ask for
+    // different things: a link is a place somebody went and belongs in the history, and a keystroke
+    // in a search box is not -- one history entry per letter would take twenty presses of back to
+    // get out of.
+    val went = { to: null, pushed: null }
+
+    remember(where, opts) =
+        went.to = where
+        went.pushed = opts.push
+
+        null
+
+    navigateWith(remember)
+
+    mount(router(routes(), "/notes?term=cats"))
+
+    setQ({ term: "dogs" })
+
+    assertEq(went.to, "/notes?term=dogs")
+    assertEq(went.pushed, false)
+
+    setQ({ term: "birds" }, { push: true })
+
+    assertEq(went.to, "/notes?term=birds")
+    assertEq(went.pushed, true)
+
+    navigateWith(null)
+
+@test
+SET_GIVEN_SOMETHING_THAT_IS_NOT_A_RECORD_IS_REFUSED()
+    // The error path. **A string is the tempting mistake** -- `set("term=dogs")` reads like it ought
+    // to work -- and it has to fault rather than write four letters into the address bar.
+    navigateWith(null)
+
+    mount(router(routes(), "/notes"))
+
+    assert(contains(fell(() -> setQ("term=dogs")), "a query is a record"))
+    assert(contains(fell(() -> setQ(null)), "a query is a record"))
+    assert(contains(fell(() -> setQ(["a", "b"])), "a query is a record"))
+
+// -- the two functions underneath ------------------------------------------------------------------
+
+@test
+encodeSearch_IS_parseSearch_READ_BACKWARDS()
+    assertEq(encodeSearch({ a: "1", b: "two words" }), "a=1&b=two%20words")
+    assertEq(encodeSearch({}), "")
+
+    // A round trip through both, over the characters a query is made of.
+    val q = { term: "x&y=z", page: "2", empty: "" }
+
+    assertEq(parseSearch(encodeSearch(q)), q)
+
+@test
+A_null_IS_LEFT_OUT_AND_A_false_OR_A_ZERO_IS_NOT()
+    // **`null` is how a name is taken away**, and the two values that look like nothing in another
+    // language are values somebody chose.
+    assertEq(encodeSearch({ a: null, b: false, c: 0 }), "b=false&c=0")
+
+@test
+withSearch_KEEPS_EVERYTHING_ABOUT_A_URL_BUT_ITS_QUERY()
+    assertEq(withSearch("/notes?a=1", { b: "2" }), "/notes?b=2")
+    assertEq(withSearch("/notes?a=1#top", { b: "2" }), "/notes?b=2#top")
+    assertEq(withSearch("/notes/", { b: "2" }), "/notes/?b=2")
+
+    // An empty query leaves no `?` behind, which is what makes clearing a filter give back the URL
+    // somebody would have typed.
+    assertEq(withSearch("/notes?a=1#top", {}), "/notes#top")
+
+@test
+THE_ADDRESS_IS_WHAT_THE_ROUTER_WAS_HANDED()
+    // **One address, set from two directions**, and this is the direction a server sets it from.
+    mount(router(routes(), "/notes?term=cats"))
+
+    assertEq(addressNow(), "/notes?term=cats")
+
+    // And a program that moves it itself is the other, which is what `lath/dom` does on every render.
+    addressIs("/elsewhere?x=1")
+
+    assertEq(searchOf(addressNow()), "x=1")

@@ -152,10 +152,14 @@ stop(seen: object) =
 // **`navigateWith` is module state, so every test here puts it back.** A page has one address bar
 // and a suite has many tests.
 tried(to: string, e) =
-    val seen = { went: null, prevented: false }
+    val seen = { went: null, pushed: null, prevented: false }
 
-    remember(where) =
+    // **The seam takes `(to, opts)` as of 0.5.0**, `useSearch` needing to rewrite an address where a
+    // link pushes one. What a link asks for is recorded here as well, so that the two callers are
+    // told apart by a test rather than by reading the source.
+    remember(where, opts) =
         seen.went = where
+        seen.pushed = opts.push
 
         null
 
@@ -175,6 +179,10 @@ A_PLAIN_LEFT_CLICK_ON_A_LINK_IS_THE_ROUTERS()
 
     assertEq(seen.went, "/notes/7")
     assertEq(seen.prevented, true)
+
+    // **A link PUSHES**, which is what the back button is for. `useSearch` is the caller that asks
+    // for the other thing.
+    assertEq(seen.pushed, true)
 
 @test
 A_MODIFIED_CLICK_AND_A_MIDDLE_CLICK_ARE_THE_BROWSERS()

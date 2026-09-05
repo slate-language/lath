@@ -11,10 +11,11 @@
 
 import { createElement, createText, setAttribute, removeAttribute, setProperty, on, off,
     setChildren, setText, byId, query, markup, release } from slate:dom
+import { insertBefore, removeChild } from slate:dom
 import { children, tagName, nodeText, attribute } from slate:dom
-import { location, pushPath, onNavigate } from slate:dom
+import { location, pushPath, replacePath, onNavigate } from slate:dom
 import { Host, useState, useEffect } from "./lath.slx"
-import { navigateWith } from "./router.slx"
+import { navigateWith, addressIs, addressWith } from "./router.slx"
 
 // A host over one element of the page.
 //
@@ -48,11 +49,29 @@ export domHost(into: string) -> Host =
     // element gives a different number -- and the framework holds the first. There is no way to ask
     // "is this node already in that parent" without remembering, so this remembers.
     //
-    // **It is also why `slate:dom`'s lack of an `insertBefore` shows here and nowhere else.** The
-    // module can set a whole child list and nothing smaller, so `insert` and `remove` below keep the
-    // list themselves and hand the whole of it over. That is correct and it is not surgical: see the
-    // note on the two functions.
+    // **It is what `patch` moves a node RELATIVE to as well.** `insertBefore` needs the child that
+    // is to follow, and the reconciler names it by handle; keeping the order here is how this host
+    // knows a node is already where it is being asked to go.
     val kids = {}
+
+    // Where a stylesheet goes. **The head, and the container only where a page somehow has none** —
+    // a `<style>` in the body works and is not where anybody looks for one.
+    val head = query("head") ?? el
+
+    // The stylesheets this host has put in the document, by their text. **Read off the page the
+    // first time one is asked for**, which is what makes a server's sheets count: they arrived as
+    // markup, they carry `data-lath-style`, and a hydrating page must leave them exactly alone.
+    var here = null
+
+    // The `<style>` elements a server put in front of the markup INSIDE the container, which
+    // `html(root)` does where the tree it rendered had no head to put them in.
+    //
+    // **They are the framework's markup and not the tree's**, so they are taken out of the list this
+    // host adopts from -- the render that follows knows nothing about them and would find a `<style>`
+    // where its first element goes. **And they are put back in front of every child list this host
+    // writes to the container**, or the first commit that changed the top of the tree would take a
+    // page's stylesheets off it.
+    var own = []
 
     element(tag: string) = createElement(tag)
 
@@ -109,19 +128,24 @@ export domHost(into: string) -> Host =
 
         fresh
 
-    // What changed about a parent's children, applied and then written once.
+    // What changed about a parent's children, applied one node at a time.
     //
-    // **`slate:dom` HAS NO `insertBefore`, AND THAT IS WHY THIS TAKES A BATCH.** `setChildren` is
-    // `replaceChildren` and is the only way this module has of changing what a node holds, so the
-    // operations are applied to the list kept above -- ordinary arithmetic on integers -- and the
-    // page is written once at the end. Told one operation at a time, a list filled with a thousand
-    // rows would be a thousand whole-list writes.
+    // **THIS IS THE OPERATION THE PAGE MAKES, AND IT IS NOW THE ONE THE RECONCILER DECIDED.** Until
+    // slate 0.0.30 `slate:dom` could set a whole child list and nothing smaller, so three correct
+    // operations became one `replaceChildren` of a thousand nodes -- which a browser records as
+    // every row leaving and arriving again, and which takes the focus, the selection and the scroll
+    // position of everything in the list with it. `insertBefore` and `removeChild` are what closed
+    // that, and the whole of the change is the two calls below.
     //
-    // **What is still owed is the write itself**: a reorder of three rows out of a thousand is three
-    // correct operations and one `replaceChildren` of a thousand nodes. The framework above is
-    // already surgical -- `tests/reconcile.slx` pins the exact operations -- and two names on
-    // `slate:dom`, an `insertBefore(parent, node, before)` and a `removeChild(parent, node)`, are
-    // the whole of what stands between that and a page that moves three nodes.
+    // **The batch is still a batch, and it still matters.** The order the operations arrive in is
+    // what makes them applicable one at a time: every removal comes first, and the insertions run
+    // right to left, so the node named in `before` is ALWAYS already a child of this parent by the
+    // time it is used as an anchor. A host handed one operation with no promise about the next could
+    // not rely on that.
+    //
+    // **A node the parent already holds is MOVED and not copied**, which is `insertBefore`'s own
+    // rule and is what a keyed reorder is: the row keeps its identity, whatever was typed into it,
+    // and whatever it was playing.
     patch(parent: integer, ops: array) =
         val list = held(parent)
 
@@ -130,14 +154,84 @@ export domHost(into: string) -> Host =
 
             if was != null then removeAt(list, was)
 
-            if op.kind == "insert"
-                val to = if op.before == null then null else list.indexOf(op.before)
+            if op.kind == "remove"
+                removeChild(parent, op.node)
 
-                if to == null then push(list, op.node) else insert(list, to, op.node)
+                continue
 
-        setChildren(parent, list)
+            val to = if op.before == null then null else list.indexOf(op.before)
+
+            if to == null then push(list, op.node) else insert(list, to, op.node)
+
+            insertBefore(parent, op.node, op.before)
 
         null
+
+    // The stylesheets a render registered, put in the document once each.
+    //
+    // **The whole list arrives every time and this writes what is not there yet**, which is the same
+    // rule `setProps` and `setText` follow and is what makes a hydrated page make no mutations: the
+    // sheets a server sent are already on the page, and a sheet already on the page is not written
+    // again. A server that FORGOT one is the case that says this is a comparison rather than a flag
+    // -- that one is put in, which is a mutation and is the right answer.
+    //
+    // **The comparison is the css itself.** Two sheets are the same sheet when they say the same
+    // thing, which is what `style(css)` already deduplicates by -- and it is the only thing a page
+    // and a server can agree on, the two having no shared name for a file.
+    styles(list: array) =
+        if here == null then here = sheetsPresent()
+
+        for css in list
+            if here.indexOf(css) != null then continue
+
+            push(here, css)
+
+            val tag = createElement("style")
+
+            setAttribute(tag, "data-lath-style", true)
+            setText(tag, css)
+
+            // **`null` appends**, which is where a stylesheet goes: after everything the page came
+            // with, so that a component's rules win a tie against the document's own.
+            insertBefore(head, tag, null)
+
+        null
+
+    // The stylesheets a server wrote in front of the markup, taken out of the list the framework
+    // adopts from and kept in `own`.
+    //
+    // **Only the LEADING ones**, which is where `html(root)` puts them and is what keeps a `<style>`
+    // a component rendered for itself out of this: that one is part of the tree, is adopted like any
+    // other element, and would be claimed by the render that produced it.
+    claimSheets(list: array) =
+        while list.len() > 0 && tagName(list[0]) == "style" && attribute(list[0], "data-lath-style") != null
+            push(own, list[0])
+            removeAt(list, 0)
+
+        null
+
+    // Every stylesheet the page already carries, as text: the ones in the head, and the ones a
+    // server wrote in front of the markup inside this container.
+    sheetsPresent() -> array =
+        var found = sheetsInHead()
+
+        for node in own
+            push(found, nodeText(node))
+
+        found
+
+    // What the head already holds, as text. **The handles are given back**, `children` minting a
+    // fresh one per child per call and this being a walk of markup nobody rendered.
+    sheetsInHead() -> array =
+        var found = []
+
+        for kid in children(head)
+            if tagName(kid) == "style" && attribute(kid, "data-lath-style") != null
+                push(found, nodeText(kid))
+
+            release(kid)
+
+        found
 
     setNodeText(node: integer, s: string) =
         if nodeText(node) != s then setText(node, s)
@@ -175,10 +269,18 @@ export domHost(into: string) -> Host =
     // renders to a string -- so this is the one function that knows about `el`.
     mounted(nodes: array) =
         // **A copy, because the framework keeps that array too.** The cache below is written to in
-        // place by `insertKid`, and sharing it would edit the reconciler's own record of the tree.
-        kids[string(el)] = nodes.slice(0)
+        // place by `patch`, and sharing it would edit the reconciler's own record of the tree.
+        //
+        // **A server's stylesheets go back in front**, they being in this container rather than in
+        // the head and this being the one call that decides what the container holds.
+        var all = own.slice(0)
 
-        setChildren(el, nodes)
+        for node in nodes
+            push(all, node)
+
+        kids[string(el)] = all.slice(0)
+
+        setChildren(el, all)
 
         null
 
@@ -205,6 +307,10 @@ export domHost(into: string) -> Host =
             for kid in children(into)
                 push(list, kid)
 
+            // **The container's own list is the one a server's stylesheets stand in**, and they come
+            // out of it here -- once, on the way in, before the framework has asked for anything.
+            if into == el then claimSheets(list)
+
         if index >= list.len() then return null
 
         val node = list[index]
@@ -213,7 +319,7 @@ export domHost(into: string) -> Host =
 
     { element: element, text: text, setProps: setProps, setText: setNodeText,
       serialise: serialise, drop: drop, mounted: mounted, adopt: adopt,
-      patch: patch, into: el, where: into }
+      patch: patch, styles: styles, into: el, where: into }
 
 // A handler by its React spelling, attached under the DOM's: `onClick` is `click`, and dropping the
 // `on` and lowering the letter after it is the whole of the translation.
@@ -260,17 +366,30 @@ isHandler(name: string) -> boolean =
 // It does three things, and they are three halves of one arrangement: it holds the current path, it
 // tells `Link` to push rather than follow, and it listens for the back button.
 export usePath() -> string =
-    val here = location()
-    val [path, setPath] = useState(here.path + here.query + here.hash)
+    val at = location()
+    val [path, setPath] = useState(at.path + at.query + at.hash)
+
+    // **`lath/router` is told where the page is on every render**, which is what lets `useSearch`
+    // answer the same query on a server and in a browser: the router module holds one address, a
+    // server sets it from the request and this sets it from the address bar.
+    addressIs(path)
 
     // **`pushPath` does NOT raise `onNavigate`** -- a browser raises `popstate` for a movement the
     // user made and never for one the program made itself -- so a push has to set the state too, and
     // the listener below is only ever the back and forward buttons.
-    go(to)
-        pushPath(to)
+    //
+    // **`opts` decides which of the two ways of moving this is, and the default is a PUSH.** A
+    // `Link` is a place somebody went and belongs in the history; rewriting a query as somebody
+    // types is not, and `useSearch` asks for a replace. Nothing said is a push, which is what every
+    // caller written before there were two meant.
+    go(to, opts = null)
+        if opts == null || opts.push != false then pushPath(to) else replacePath(to)
+
+        addressIs(to)
         setPath(to)
 
     moved(where)
+        addressIs(where)
         setPath(where)
 
     // **Installed once and not on every render**, which is what the empty dependency list says. A
@@ -285,3 +404,13 @@ export usePath() -> string =
     useEffect(wire, [])
 
     path
+
+// **`useSearch` is `usePath` underneath, on a page, and this is where the two are joined.** The
+// router module holds the query and knows nothing about a browser; this line hands it the hook that
+// reads a real address bar and re-renders when the back button is pressed.
+//
+// **It runs when this file is IMPORTED**, which is what makes calling it from `useSearch` a stable
+// hook slot rather than a hook inside a condition: whether a page has an address bar is decided by
+// which modules the program imports, before a single component renders, and never changes while it
+// runs.
+addressWith(usePath)

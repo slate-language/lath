@@ -75,15 +75,31 @@ export hostSetProps(node: object, props: object) =
 export hostSetText(node: object, s: string) =
     node.text = s
 
-export serialiseNodes(nodes: array) -> string =
+// The tree as markup, with the stylesheets a render registered written into it.
+//
+// **WHERE A SHEET GOES IS DECIDED BY WHAT THE TREE ALREADY IS, and there are only two answers.** A
+// program that renders a whole document -- `<html><head>...` -- gets its sheets at the end of the
+// `<head>`, which is where a stylesheet belongs and is what a browser will have parsed before it
+// reaches the body. A program that renders a FRAGMENT, which is what `html(root)` usually answers
+// and what a server embeds in a template of its own, has no head to put them in: they go in front of
+// the fragment, so that the markup is one string a caller can drop anywhere and the rules arrive
+// before the elements they are about.
+//
+// **Either way it is one `<style>` per distinct sheet and never one per component**, `style(css)`
+// having already made the list distinct.
+export serialiseNodes(nodes: array, sheets: array = []) -> string =
+    val toHead = sheets.len() > 0 && hasHead(nodes)
+
     var out = ""
 
     for node in nodes
-        out = out + serialiseNode(node)
+        out = out + serialiseNode(node, if toHead then sheets else [])
 
-    out
+    if sheets.len() == 0 || toHead then return out
 
-serialiseNode(node: object) -> string =
+    styleTags(sheets) + out
+
+serialiseNode(node: object, sheets: array) -> string =
     if node.tag == undefined then return escapeText(node.text)
 
     var out = "<" + node.tag + attributes(node.props) + ">"
@@ -91,9 +107,36 @@ serialiseNode(node: object) -> string =
     if isVoid(node.tag) then return out
 
     for kid in node.kids
-        out = out + serialiseNode(kid)
+        out = out + serialiseNode(kid, sheets)
+
+    if node.tag == "head" then out = out + styleTags(sheets)
 
     out + "</" + node.tag + ">"
+
+// Whether the tree has a `<head>` anywhere in it, which is the whole of the question above.
+hasHead(nodes: array) -> boolean =
+    for node in nodes
+        if node.tag == undefined then continue
+        if node.tag == "head" then return true
+        if hasHead(node.kids) then return true
+
+    false
+
+// **The css is written as it stands and is NOT escaped**, which is the HTML specification's rule for
+// a `<style>`: its content is raw text, and escaping it would turn a `&` in a `content:` string and
+// a `<` in a selector into something that does not parse as css. What makes that safe rather than a
+// hole is that a sheet cannot contain `</style` -- `style(css)` refuses one that does, which is the
+// only string that could end the element early.
+//
+// **`data-lath-style` is how the page tells a server's sheet from its own**, which is what lets a
+// hydrating page leave the ones already there alone.
+styleTags(sheets: array) -> string =
+    var out = ""
+
+    for css in sheets
+        out = out + "<style data-lath-style>" + css + "</style>"
+
+    out
 
 // **`children`, `key` and every handler are left out of the markup**, the first two being the
 // framework's own and a handler having nowhere to go in text. A `true` is a bare attribute and a

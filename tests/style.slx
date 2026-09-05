@@ -1,0 +1,231 @@
+import { createElement, Fragment, mount, html, flush, stringHost, style, useState } from "../lath.slx"
+import card from "./card.css"
+import theme from "./theme.css"
+
+// `style(css)` -- a component's stylesheet, registered once for the page.
+//
+// **THE ARGUMENT COMES FROM AN ASSET IMPORT, AND THE FIRST TWO LINES OF THIS FILE ARE THE POINT.**
+// `import card from "./card.css"` is slate reading the file while the program is compiled and handing
+// it over as a string, so a stylesheet stays a stylesheet -- highlighted by an editor, understood by
+// a browser's dev tools, and not a quoted blob in the middle of a component. The floor for this
+// package moved to slate 0.0.30 for it.
+//
+// **What is checked here is the STRING host's half**: which markup comes out and where the `<style>`
+// lands in it. `tests-dom/style.slx` checks the page's half, which is a different question with a
+// different answer -- and the one that says a hydrated page writes nothing.
+
+// How many times one string occurs in another, which is the measurement almost every test below
+// makes: registering a sheet twice has to be one `<style>` and not two.
+countOf(s: string, sub: string) -> integer =
+    var found = 0
+    var from = 0
+
+    while true
+        val at = indexOf(s[from..], sub)
+
+        if at == null then break
+
+        found = found + 1
+        from = from + at + sub.len()
+
+    found
+
+// The message a call left behind, or empty where it did not fault.
+fell(f) -> string =
+    var said = ""
+
+    try
+        f()
+    catch e
+        said = e.message
+
+    said
+
+val small = ".a { color: red; }"
+val other = ".b { color: blue; }"
+
+Card(props: object) =
+    style(card)
+
+    <div class="lath-card"><h2>{props.title}</h2>{props.children}</div>
+
+Small(props: object) =
+    style(small)
+
+    <p class="a">small</p>
+
+@test
+A_SHEET_A_COMPONENT_REGISTERED_IS_IN_THE_MARKUP()
+    val out = html(mount(<Small/>))
+
+    // **In front of the fragment, because there is no head to put it in.** `html(root)` usually
+    // answers a fragment a server embeds in a template of its own, and the rules have to arrive
+    // before the elements they are about.
+    assertEq(out, "<style data-lath-style>" + small + "</style><p class=\"a\">small</p>")
+
+@test
+THE_SAME_SHEET_FROM_TWO_COMPONENTS_IS_ONE_STYLE_ELEMENT()
+    // **The whole of what makes calling `style` at the top of every render correct.** A list of fifty
+    // cards is one stylesheet, and it is one because the list is deduplicated by the css itself.
+    Two(props: object) = <><Small/><Small/><Small/></>
+
+    val out = html(mount(<Two/>))
+
+    assertEq(countOf(out, "<style"), 1)
+    assertEq(countOf(out, "small</p>"), 3)
+
+@test
+TWO_DIFFERENT_SHEETS_ARE_TWO_IN_THE_ORDER_THEY_WERE_REGISTERED()
+    Shell(props: object) =
+        style(theme)
+
+        <><Small/></>
+
+    val out = html(mount(<Shell/>))
+
+    assertEq(countOf(out, "<style data-lath-style>"), 2)
+
+    // The shell renders before the component inside it, so its sheet is first -- which is what a
+    // cascade needs, a component's rules being the more specific of the two.
+    assert(indexOf(out, theme) < indexOf(out, small))
+
+@test
+A_SHEET_REGISTERED_ON_A_LATER_RENDER_ARRIVES_TOO()
+    // **A sheet is not only a first-render thing.** A dialog that opens for the first time on the
+    // fortieth render registers its stylesheet then, and the page has to grow it.
+    var setter = null
+
+    App(props: object) =
+        val [open, setOpen] = useState(false)
+
+        setter = setOpen
+
+        <div>{if open then <Small/> else null}</div>
+
+    val root = mount(<App/>)
+
+    assertEq(countOf(html(root), "<style"), 0)
+
+    setter(true)
+    flush(root)
+
+    assertEq(countOf(html(root), "<style"), 1)
+
+@test
+A_TREE_WITH_A_HEAD_GETS_ITS_SHEETS_AT_THE_END_OF_IT()
+    // **Where a stylesheet belongs, and the string host puts it there when the tree gives it the
+    // chance.** A program rendering a whole document has a head; one rendering a fragment has not,
+    // and the two answers are the two halves of `serialiseNodes`.
+    Page(props: object) =
+        <html>
+            <head><title>a page</title></head>
+            <body><Small/></body>
+        </html>
+
+    val out = html(mount(<Page/>))
+
+    assertEq(countOf(out, "<style"), 1)
+    assert(contains(out, "<title>a page</title><style data-lath-style>" + small + "</style></head>"))
+
+    // And NOT in front of the document, which is the mistake the other branch would make.
+    assert(!startsWith(out, "<style"))
+
+@test
+A_SHEET_IS_WRITTEN_RAW_AND_IS_NOT_ESCAPED()
+    // **A `<style>`'s content is raw text and escaping it would break css**: a `>` in a child
+    // selector and an `&` in a `content:` string are both ordinary, and both would come out as
+    // entities the browser then fails to parse.
+    val out = html(mount(<Card title="a card"/>))
+
+    assert(contains(out, "& > h2"))
+    assert(!contains(out, "&amp;"))
+
+    // The text of the element the component rendered IS escaped, which is the pair that says the two
+    // are decided separately and not by one switch.
+    val said = html(mount(<Card title="a & b"/>))
+
+    assert(contains(said, "<h2>a &amp; b</h2>"))
+
+@test
+A_SHEET_THAT_IS_NOT_TEXT_IS_REFUSED()
+    // The error path, and it names the argument: a sheet that is not a string is a mistake about the
+    // import, and a fault three lines later about a string would send the reader to the wrong file.
+    Wrong(props: object) =
+        style(42)
+
+        <p>never</p>
+
+    assert(contains(fell(() -> mount(<Wrong/>)), "style is given a stylesheet as text"))
+
+    Missing(props: object) =
+        style(null)
+
+        <p>never</p>
+
+    assert(contains(fell(() -> mount(<Missing/>)), "style is given a stylesheet as text"))
+
+@test
+A_SHEET_THAT_COULD_END_ITS_OWN_ELEMENT_IS_REFUSED()
+    // **The one string that cannot go in a `<style>` raw**, and refusing it is what makes writing the
+    // rest of the css unescaped safe rather than a hole.
+    Hole(props: object) =
+        style(".a{}</style><script>alert(1)</script>")
+
+        <p>never</p>
+
+    assert(contains(fell(() -> mount(<Hole/>)), "may not contain"))
+
+@test
+STYLE_OUTSIDE_A_RENDER_IS_REFUSED()
+    // It is not a hook and keeps no slot, but it does need a render to register against -- so the
+    // one thing it has in common with a hook is that there has to be a component.
+    assert(contains(fell(() -> style(small)), "nothing is rendering"))
+
+@test
+A_SHEET_MAY_BE_REGISTERED_INSIDE_A_CONDITION()
+    // **Which `useState` may not**, and is why this is not a hook: a component that only sometimes
+    // renders the thing the sheet is about is the ordinary case, not a special one.
+    var setter = null
+
+    Maybe(props: object) =
+        val [on, setOn] = useState(false)
+
+        setter = setOn
+
+        if on then style(other)
+
+        <p>maybe</p>
+
+    val root = mount(<Maybe/>)
+
+    assertEq(countOf(html(root), "<style"), 0)
+
+    setter(true)
+    flush(root)
+
+    assertEq(countOf(html(root), "<style"), 1)
+
+@test
+TWO_ROOTS_ARE_TWO_PAGES_AND_NOT_ONE_SHARED_LIST()
+    // **The reason `stringHost` builds its own closure now.** A server answering two requests renders
+    // two pages, and a sheet one of them registered has no business in the other's markup.
+    val one = mount(<Small/>)
+    val two = mount(<Card title="x"/>)
+
+    assert(contains(html(one), small))
+    assert(!contains(html(one), "lath-card"))
+    assert(contains(html(two), "lath-card"))
+    assert(!contains(html(two), small))
+
+@test
+A_RENDER_THAT_FAULTED_DOES_NOT_LEAVE_THE_FRAMEWORK_MID_RENDER()
+    // **A regression for something only this file could ask.** A component that faults leaves no
+    // statement of its own to run, so the instance it was rendering stayed named until a boundary
+    // cleared it -- and a render with no boundary above it never did. What that left behind was a
+    // `style` or a `useContext` called from outside a render reading a DEAD instance and answering,
+    // where it has to say there is no render at all.
+    Broken(props: object) =
+        throw "on purpose"
+
+    assert(contains(fell(() -> mount(<Broken/>)), "on purpose"))
+    assert(contains(fell(() -> style(small)), "nothing is rendering"))

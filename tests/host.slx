@@ -1,4 +1,4 @@
-import { createElement, Fragment, mount, html, flush, stringHost, useState } from "../lath.slx"
+import { createElement, Fragment, mount, html, flush, stringHost, style, useState } from "../lath.slx"
 
 // The host adapter -- the seam a DOM renderer stands on.
 //
@@ -13,7 +13,7 @@ import { createElement, Fragment, mount, html, flush, stringHost, useState } fro
 // A host that answers everything the string host does and writes down what it was asked. `into` is
 // the list of top-level nodes it was last handed; `dropped` counts the nodes given back.
 recorder() =
-    val seen = { mounts: 0, into: [], dropped: 0 }
+    val seen = { mounts: 0, into: [], dropped: 0, styles: 0, sheets: [] }
     val inner = stringHost()
 
     dropped(node) =
@@ -27,7 +27,13 @@ recorder() =
 
         null
 
-    val host = inner with { drop: dropped, mounted: mounted, seen: seen }
+    styles(list) =
+        seen.styles = seen.styles + 1
+        seen.sheets = list
+
+        null
+
+    val host = inner with { drop: dropped, mounted: mounted, styles: styles, seen: seen }
 
     host
 
@@ -99,3 +105,42 @@ A_HOST_THAT_IS_NOT_GIVEN_IS_THE_STRING_HOST()
     // The default, said out loud, because every other test here passes a host and would not notice
     // if the default had stopped being one.
     assert(html(mount(<p>hi</p>)) == "<p>hi</p>")
+
+@test
+THE_HOST_IS_TOLD_ABOUT_A_STYLESHEET_ONCE_AND_IS_HANDED_THE_WHOLE_LIST()
+    // **The tenth function, pinned where the count can be seen.** `tests/style.slx` reads the markup,
+    // which says how many `<style>` elements came out; this says how many times the host was ASKED,
+    // which is the number a DOM host turns into writes on a real page.
+    var setter = null
+
+    App(props: object) =
+        val [both, setBoth] = useState(false)
+
+        setter = setBoth
+
+        style(".a{}")
+        style(".a{}")
+
+        if both then style(".b{}")
+
+        <p>hi</p>
+
+    val host = recorder()
+    val root = mount(<App/>, host)
+
+    // Twice in one render and once again on the next: one sheet, one call.
+    assertEq(host.seen.styles, 1)
+    assertEq(host.seen.sheets, [".a{}"])
+
+    setter(false)
+    flush(root)
+
+    assertEq(host.seen.styles, 1)
+
+    // A new sheet is a second call, and it carries BOTH -- which is what lets a host that hydrated a
+    // page work out for itself which of them are already there.
+    setter(true)
+    flush(root)
+
+    assertEq(host.seen.styles, 2)
+    assertEq(host.seen.sheets, [".a{}", ".b{}"])

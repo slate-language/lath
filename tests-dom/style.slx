@@ -1,0 +1,179 @@
+import { createElement, Fragment, mount, hydrate, html, flush, style, useState } from "../lath.slx"
+import { domHost } from "../dom.slx"
+import { at, shown, inHead, mutations } from "./probe.slx"
+
+// `style(css)` against a real document -- which is a different question from the one
+// `tests/style.slx` asks, and the one that cannot be asked without a page.
+//
+// **Where the string host WRITES markup, this host has to decide what the page already has.** A
+// `<style>` in the head is not something a serialiser can be compared against: it is a mutation of a
+// document, and whether it happened is jsdom's answer and nobody else's.
+//
+// **Every test here uses css of its own.** The suite shares one document, so the head fills up as it
+// runs -- which is exactly the situation a second mount of the same sheet has to survive, and is
+// what the second test measures.
+
+countOf(s: string, sub: string) -> integer =
+    var found = 0
+    var from = 0
+
+    while true
+        val at = indexOf(s[from..], sub)
+
+        if at == null then break
+
+        found = found + 1
+        from = from + at + sub.len()
+
+    found
+
+val one = ".dom-one { color: rgb(1, 1, 1); }"
+val two = ".dom-two { color: rgb(2, 2, 2); }"
+val three = ".dom-three { color: rgb(3, 3, 3); }"
+val four = ".dom-four { color: rgb(4, 4, 4); }"
+
+@test
+A_SHEET_A_COMPONENT_REGISTERED_IS_IN_THE_DOCUMENTS_HEAD()
+    // **The head and not the container**, which is where a stylesheet belongs and is the DOM host's
+    // one departure from the string host's answer: a server writing markup has nowhere else to put
+    // it, and a page has the right place.
+    One(props: object) =
+        style(one)
+
+        <p id="one">one</p>
+
+    at("")
+    mount(<One/>, domHost("#page"))
+
+    assertEq(countOf(inHead(), one), 1)
+    assert(contains(inHead(), "<style data-lath-style="))
+
+    // And nothing about the tree changed: a stylesheet is not a node the components rendered.
+    assert(!contains(shown(), "<style"))
+
+@test
+THE_SAME_SHEET_FROM_A_SECOND_MOUNT_IS_NOT_A_SECOND_STYLE_ELEMENT()
+    // **Two hosts on one page are two hosts and one document.** Each keeps its own list, so the only
+    // thing that stops a second `<style>` is reading what the head already carries -- which is what
+    // `sheetsInHead` is for and what this asserts.
+    Two(props: object) =
+        style(two)
+
+        <p id="two">two</p>
+
+    at("")
+    mount(<Two/>, domHost("#page"))
+
+    assertEq(countOf(inHead(), two), 1)
+
+    at("")
+    mount(<Two/>, domHost("#page"))
+
+    assertEq(countOf(inHead(), two), 1)
+
+@test
+async A_SHEET_REGISTERED_BY_A_LATER_RENDER_IS_INJECTED_THEN()
+    var setter = null
+
+    Later(props: object) =
+        val [open, setOpen] = useState(false)
+
+        setter = setOpen
+
+        style(three)
+
+        if open then style(four)
+
+        <p id="later">later</p>
+
+    at("")
+
+    val root = mount(<Later/>, domHost("#page"))
+
+    assertEq(countOf(inHead(), three), 1)
+    assertEq(countOf(inHead(), four), 0)
+
+    setter(true)
+    flush(root)
+
+    await sleep(1)
+
+    assertEq(countOf(inHead(), four), 1)
+    assertEq(countOf(inHead(), three), 1)
+
+@test
+async A_HYDRATED_PAGE_ADOPTS_THE_SERVERS_SHEET_AND_RECORDS_NOTHING()
+    // **THE MEASUREMENT IS THE OBSERVER AND IT COULD NOT BE ANYTHING ELSE.** Counting what the host
+    // was asked to do would only say lath believes it wrote nothing; this is the browser's own
+    // answer, and a stylesheet written a second time is a mutation it would see.
+    //
+    // **The markup is the string host's own output**, which is what a server sends: the `<style>`
+    // stands in front of the fragment, the fragment goes in the container, and the page hydrates
+    // against the whole of it.
+    val sheet = ".dom-hydrated { color: rgb(5, 5, 5); }"
+
+    Card(props: object) =
+        style(sheet)
+
+        <p id="card" class="card">a card</p>
+
+    val sent = html(mount(<Card/>))
+
+    assert(startsWith(sent, "<style data-lath-style>"))
+
+    at(sent)
+
+    // The records for planting the markup are the harness's own; the measurement starts after them.
+    await sleep(1)
+
+    val records = mutations()
+
+    val root = hydrate(<Card/>, domHost("#page"))
+
+    await sleep(1)
+
+    // Nothing at all: not the tree, and not the stylesheet standing in front of it.
+    assertEq(mutations() - records, 0)
+
+    // The server's `<style>` is still exactly where the server put it, and the head has no copy.
+    assertEq(countOf(shown(), sheet), 1)
+    assertEq(countOf(inHead(), sheet), 0)
+
+@test
+async A_SERVERS_SHEET_SURVIVES_A_LATER_CHANGE_TO_THE_TOP_OF_THE_TREE()
+    // **The one this would have got wrong.** A server's sheets stand INSIDE the container, and the
+    // container's whole child list is what `mounted` writes when the set of top-level nodes changes
+    // -- so a host that handed over only the tree's own nodes would take the page's stylesheet off it
+    // on the first render that added a node at the top.
+    val sheet = ".dom-kept { color: rgb(6, 6, 6); }"
+
+    var setter = null
+
+    Shell(props: object) =
+        val [more, setMore] = useState(false)
+
+        setter = setMore
+
+        style(sheet)
+
+        <>
+            <p id="kept">kept</p>
+            {more && <p id="extra">extra</p>}
+        </>
+
+    at(html(mount(<Shell/>)))
+
+    val root = hydrate(<Shell/>, domHost("#page"))
+
+    assertEq(countOf(shown(), sheet), 1)
+
+    setter(true)
+    flush(root)
+
+    await sleep(1)
+
+    assertEq(countOf(shown(), sheet), 1)
+    assert(contains(shown(), "id=\"extra\""))
+
+    // And still in front, which is where a rule has to be to lose a tie to the page's own.
+    assert(startsWith(shown(), "<div id=\"page\"><style"))

@@ -1,7 +1,7 @@
 import { createElement, Fragment, mount, flush, useState } from "../lath.slx"
 import { domHost } from "../dom.slx"
 import { byId, query, markup, setProperty } from slate:dom
-import { at, mutations, touched } from "./probe.slx"
+import { at, mutations, touched, focus, active } from "./probe.slx"
 
 // A long list reordered, watched by the browser rather than by the framework.
 //
@@ -37,21 +37,45 @@ listing() -> object =
 
     { root: mount(<List/>, domHost("#page")), to: setter }
 
+// The same list, with rows a caret can be put in.
+//
+// **Separate from `listing` rather than a `tabindex` added to it**, because the markup that list
+// produces is asserted character for character two tests below.
+focusable() -> object =
+    var setter = null
+
+    row(name) = <li key={name} id={"row-" + name} tabindex="0">{name}</li>
+
+    List(props: object) =
+        val [keys, set] = useState(names(0))
+
+        setter = set
+
+        <ul id="rows">{keys.map(row)}</ul>
+
+    at("")
+
+    { root: mount(<List/>, domHost("#page")), to: setter }
+
 @test
-async REORDERING_THREE_ROWS_OF_A_THOUSAND_IS_ONE_WRITE_AND_NOT_A_REBUILD()
-    // **THE BOUND IS ONE RECORD PER ROW, AND IT IS THE BOUND `slate:dom` IMPOSES RATHER THAN THE ONE
-    // THE FRAMEWORK EARNED.** The reconciler decides on three operations -- `tests/reconcile.slx`
-    // pins exactly which three -- and the DOM host has no `insertBefore` to apply them with, so it
-    // applies them to a list it keeps and writes that list with `replaceChildren`, which the browser
-    // records as every row leaving and arriving again.
+async REORDERING_THREE_ROWS_OF_A_THOUSAND_IS_SIX_MUTATIONS_AND_NOT_A_THOUSAND()
+    // **THE BOUND IS THE SIZE OF THE CHANGE AND NO LONGER THE SIZE OF THE LIST, AND THAT IS THE
+    // WHOLE OF WHAT 0.5.0 BOUGHT HERE.** The reconciler has always decided on three operations --
+    // `tests/reconcile.slx` pins exactly which three -- and until slate 0.0.30 the DOM host had no
+    // `insertBefore` to apply them with: it applied them to a list it kept and wrote that list with
+    // `replaceChildren`, which the browser records as a thousand rows leaving and a thousand
+    // arriving. `insertBefore` and `removeChild` are what closed that, and the number below is the
+    // measurement of it.
     //
-    // **It still has teeth**: the same list without keys records twice this, every row being torn
-    // down and built again, and the row identity the next test checks does not survive that.
+    // **Two records per row moved**, a browser reporting a move as a removal and an insertion, and
+    // **nothing at all for the nine hundred and ninety-seven rows that stayed**. The old bound was
+    // `rows + 2`, which this is a hundred and sixty times inside.
     val it = listing()
 
     await sleep(1)
 
     val records = mutations()
+    val moved = touched()
 
     // The last three rows moved to the front, and nothing else changed.
     it.to(names(rows - 3))
@@ -60,8 +84,11 @@ async REORDERING_THREE_ROWS_OF_A_THOUSAND_IS_ONE_WRITE_AND_NOT_A_REBUILD()
 
     await sleep(1)
 
-    assert(mutations() - records <= rows + 2,
-        "reordering three rows recorded " + string(mutations() - records) + " mutations")
+    assertEq(mutations() - records, 6)
+
+    // **And six NODES touched**, which is the half a record count cannot say: one whole-list write is
+    // a single record that moves two thousand nodes.
+    assertEq(touched() - moved, 6)
 
 @test
 async THE_ROWS_ARE_MOVED_AND_NOT_REBUILT()
@@ -103,3 +130,56 @@ async A_RENDER_THAT_CHANGES_NOTHING_TOUCHES_THE_PAGE_NOT_AT_ALL()
     await sleep(1)
 
     assertEq(touched() - moved, 0)
+
+@test
+async THE_CARET_STAYS_IN_A_ROW_THAT_MOVED()
+    // **What a whole-list write costs a person, said as the browser sees it.** `replaceChildren`
+    // takes every row out of the page and puts it back, and a row taken out of the page loses the
+    // caret -- so somebody typing in the third row of a list that reorders underneath them was
+    // silently thrown out of the field. A moved node keeps it, and that is `insertBefore`'s own rule
+    // rather than anything the framework arranges.
+    //
+    // **jsdom answers this and cannot answer the neighbouring question**: it is a faithful DOM and
+    // not a rendering engine, so there is no layout and a scroll position is always zero. Focus is
+    // the half of "the row survived intact" that a document without layout can be asked.
+    // **The rows carry a `tabindex` so that they can hold the caret at all**, jsdom refusing to focus
+    // an element a browser would refuse to focus. It is the one difference from the list above.
+    val it = focusable()
+
+    await sleep(1)
+
+    focus(byId("row-r0"))
+
+    assertEq(active(), "row-r0")
+
+    it.to(names(rows - 3))
+
+    flush(it.root)
+
+    await sleep(1)
+
+    assertEq(active(), "row-r0")
+
+@test
+async A_ROW_TAKEN_OUT_IS_ONE_REMOVAL_AND_NOT_A_REWRITE()
+    // The other operation, measured the same way. **One record and one node**, where a whole-list
+    // write is a record naming every row in the list.
+    val it = listing()
+
+    await sleep(1)
+
+    val records = mutations()
+    val moved = touched()
+
+    var short = names(0)
+
+    removeAt(short, 500)
+
+    it.to(short)
+
+    flush(it.root)
+
+    await sleep(1)
+
+    assertEq(mutations() - records, 1)
+    assertEq(touched() - moved, 1)

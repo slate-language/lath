@@ -30,11 +30,11 @@ export val Fragment = "#fragment"
 // itself, which every slate value does.
 export type Element = { type: any, props: object, key: any }
 
-// The nine functions a host answers, and nothing above them knows what a node is.
+// The ten functions a host answers, and nothing above them knows what a node is.
 //
 // **A program writing its own host annotates it with this** — `myHost() -> Host` — which is the one
 // check there is that an adapter is whole. It shipped with six of these: an adapter with one
-// implementation is a guess, and not one of the three that arrived later was guessable from the
+// implementation is a guess, and not one of the four that arrived later was guessable from the
 // first implementation.
 //
 // **`patch(parent, ops)` REPLACED A `setKids` THAT TOOK THE WHOLE LIST**, and the count is the same
@@ -48,7 +48,18 @@ export type Element = { type: any, props: object, key: any }
 // **A host is handed the whole batch and not one operation at a time**, which is the difference
 // between the two kinds of host: one that can move a single child walks the list, and one that can
 // only write a whole child list applies the operations to a list of its own and writes once.
-export type Host = { element: function, text: function, setProps: function, setText: function, serialise: function, drop: function, mounted: function, adopt: function, patch: function }
+//
+// **`styles(sheets)` is handed the WHOLE list of distinct stylesheets whenever it grows**, in the
+// order they were registered, and never one sheet at a time. That is `mounted`'s shape and it is
+// chosen for `mounted`'s reason: a host told what the set now IS can decide for itself what it has
+// already done about it.
+//
+// **It is called on a HYDRATING commit too, and the host is expected to compare before it writes** —
+// which is the rule `setProps` and `setText` already follow and is what makes a hydrated page make no
+// mutations. A page's sheets came with the server's markup; the host can see them, so it writes
+// none. A server that forgot one is the case that separates this from a flag saying *do nothing*:
+// the host puts that one in, which is a mutation and is the right answer.
+export type Host = { element: function, text: function, setProps: function, setText: function, serialise: function, drop: function, mounted: function, adopt: function, patch: function, styles: function }
 
 // What every element in the source is desugared into.
 //
@@ -132,6 +143,82 @@ export useEffect(run: function, deps = null) =
         cell.first = false
 
         push(rendering.root.effects, { cell: cell, run: run })
+
+// -- stylesheets ---------------------------------------------------------------------------------
+
+// The css a component needs, registered once for the whole page.
+//
+//     import styles from "./card.css"
+//
+//     Card(props) =
+//         style(styles)
+//
+//         <div class="card">{props.children}</div>
+//
+// **The argument is ORDINARY CSS AS TEXT, and an asset import is where it comes from**: slate reads
+// the file while the program is compiled and hands it over as a string, so the stylesheet is a file
+// an editor highlights and a browser's dev tools understand rather than a string literal in a
+// component. Six components importing one sheet is one string, on both back ends.
+//
+// **It is registered once per DISTINCT SHEET and not once per component or once per render.** The
+// list is deduplicated by the string itself, which is what makes calling this at the top of every
+// render the right thing to write: a component that renders fifty times, and fifty components that
+// import the same file, are one `<style>`.
+//
+// **The two hosts put it in the two places a sheet can go.** `html(root)` writes one `<style>` per
+// sheet — at the end of the `<head>` where the tree has one, and in front of the markup where it is
+// a fragment. A page injects one `<style>` per sheet into the document's head, once.
+//
+// **A hydrating page injects NOTHING**, the server having already written every sheet the first
+// render registers: a hydrated page makes no mutations at all, and a stylesheet written a second
+// time would be one — and a duplicated rule, which is worse than a wasted write because it changes
+// what the cascade does.
+//
+// **It is not a hook.** It keeps no slot, so it may be called inside a condition where `useState`
+// may not — which is the point, a component that only sometimes renders the thing the sheet is about
+// being the ordinary case.
+//
+// **There is no way to take a sheet back, deliberately.** A sheet is registered by a component that
+// USES it and is deduplicated across every component that does, so nothing knows when the last user
+// has gone; removing one on unmount would strip the rules out from under whoever else had asked for
+// them. A page's stylesheets grow to the set of components it has rendered and stop there.
+export style(css) =
+    // The error path first, because a sheet that is not text is a mistake in the import and the
+    // fault has to name the argument rather than something further down about a string.
+    if !(css is string)
+        throw "style is given a stylesheet as text, and this is " + string(css)
+
+    if rendering == null
+        throw "style is called while a component renders, and nothing is rendering"
+
+    // **`</style` is refused rather than escaped**, which is the whole of what makes writing the css
+    // raw safe: a `<style>` element's content is raw text and that is the one string that can end it
+    // early. Escaping instead would break a `&` in a `content:` string and a `<` in a selector.
+    // **`indexOf` and not `contains`**, this file having a `contains` of its own that takes an array.
+    if indexOf(css.lower(), "</style") != null
+        throw "a stylesheet may not contain \"</style\", which would end the element it is written in"
+
+    val root = rendering.root
+
+    if root.sheets.indexOf(css) == null then push(root.sheets, css)
+
+    null
+
+// The sheets registered so far, handed to the host whenever that list grows.
+//
+// **The hydrating commit hands them over like any other, and the host is what makes that free.** The
+// markup the page is standing on carries a `<style>` for every sheet the first render registers, so
+// a host that compares before it writes writes nothing — which is the same rule that keeps an
+// attribute already right from being written again. Writing one twice would be a mutation, and a
+// duplicated rule, which is worse than a wasted write because it changes what the cascade does.
+styled(root: object) =
+    if root.sheets == root.styled then return null
+
+    root.styled = root.sheets.slice(0)
+
+    root.host.styles(root.styled)
+
+    null
 
 // The slot this hook call owns, made on the first render and found again on every one after.
 hookCell(fresh: object) -> object =
@@ -353,7 +440,19 @@ renderComponent(inst: object) =
     rendering = inst
     slot = 0
 
-    val out = inst.el.type(inst.el.props)
+    var out = null
+
+    // **A render that faults has to put this back, and a boundary is not enough on its own.**
+    // `recoverAt` clears it for a subtree that had one above it; where nothing catches, the fault
+    // leaves the program with `rendering` still naming a dead instance -- and the next `style` or
+    // `useContext` called from outside a render reads that instance instead of saying there is no
+    // render. It is the sort of leak a suite only sees when one test faults before another asks.
+    try
+        out = inst.el.type(inst.el.props)
+    catch e
+        rendering = null
+
+        throw e
 
     rendering = null
 
@@ -624,7 +723,7 @@ export hydrate(el, host = null) -> object =
 
 newRoot(host) -> object =
     { host: host, inst: null, pending: [], effects: [], scheduled: false, claim: null, trail: [],
-      nodes: [], dropped: [] }
+      nodes: [], dropped: [], sheets: [], styled: [] }
 
 // The rendered tree as text, which is what the string host is for.
 export html(root: object) -> string = root.host.serialise(nodesOf(root.inst))
@@ -667,6 +766,10 @@ rendered(inst: object) =
 
 // What the render leaves the host to do: the top of the tree, the nodes that went, and the effects.
 commit(root: object) =
+    // **Before the early return below, because a hydrating commit still has to REMEMBER its
+    // sheets** — it is the commit after it that would otherwise write every one of them again.
+    styled(root)
+
     // **A hydrating commit does not hand the host the top of the tree**, because those nodes are
     // already the container's children and putting them there again is a mutation -- which is the one
     // thing a hydrated page must not make. It is remembered, so the commit after this one has
@@ -929,11 +1032,28 @@ export createPortal(el, into) -> Element =
 
 // -- the string host -------------------------------------------------------------------------
 
-// **Nine functions, and nothing above them knows what a node is.** A DOM host answers the same nine
+// **Ten functions, and nothing above them knows what a node is.** A DOM host answers the same ten
 // over real elements, which is what makes the components on both sides one set of components. It
 // shipped with six, needed `drop` and `mounted` to render into a document and `adopt` to hydrate
-// one; `patch` is `setKids`'s slot, filled with what changed rather than with what the list now is.
+// one; `patch` is `setKids`'s slot, filled with what changed rather than with what the list now is,
+// and `styles` is the stylesheets a render asked for.
+//
+// **It is built here and not at the top level of `markup.slx` because it REMEMBERS something now.**
+// Eight of the ten are ordinary functions of their arguments and are still imported; the sheets are
+// this host's own, so that two renders on one server are two answers and not one shared list.
 export stringHost() -> Host =
+    var sheets = []
+
+    // The whole list, every time, so this is an assignment rather than a merge.
+    styles(list: array) =
+        sheets = list
+
+        null
+
+    // **The sheets are part of the markup**, which is the string host's whole answer to where a
+    // stylesheet goes: a server's job is to send a page, and a page's `<style>` is in the page.
+    serialise(nodes: array) -> string = serialiseNodes(nodes, sheets)
+
     { element: hostElement, text: hostText, setProps: hostSetProps,
-      setText: hostSetText, serialise: serialiseNodes, drop: hostDrop, mounted: hostMounted,
-      adopt: hostAdopt, patch: hostPatch }
+      setText: hostSetText, serialise: serialise, drop: hostDrop, mounted: hostMounted,
+      adopt: hostAdopt, patch: hostPatch, styles: styles }

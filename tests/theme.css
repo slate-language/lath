@@ -1,0 +1,15 @@
+/* The page's own colours, imported once by whatever renders the shell. */
+
+:root {
+    color-scheme: light dark;
+
+    --lath-ink: #16181d;
+    --lath-paper: #fbfbf9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --lath-ink: #e8e6e1;
+        --lath-paper: #16181d;
+    }
+}
