@@ -546,6 +546,9 @@ written beside it.
 
 ## Requirements
 
+slate **0.0.35** or newer as of lath 0.7.0, and the floor moved because `len` was removed in favour
+of the `.length` property.
+
 slate **0.0.30** or newer as of lath 0.5.0, and the floor moved because two things in that release
 are what this version is made of. **Asset imports** — `import styles from "./card.css"`, the file
 read while the program is compiled and travelling inside it — are where `style(css)` gets a
