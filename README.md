@@ -61,6 +61,10 @@ the line that is wrong is the one in your own program.
 | `router(routes, at)`, `Link` | one URL, one view, in `lath/router` |
 | `useSearch()` | the URL's query as state, in `lath/router` |
 | `usePath()` | the address bar as state, in `lath/dom` |
+| `atom(initial, write)` | a value outside any component's own tree |
+| `createStore()`, `defaultStore()` | where atoms' values actually live |
+| `Provider`, `useStore()` | the store a subtree reads its atoms from |
+| `useAtom(a)`, `useAtomValue(a)`, `useSetAtom(a)` | an atom's value, or its setter, or both |
 
 ## Three modules, and the splits are not cosmetic
 
@@ -321,6 +325,46 @@ than a fault: a portal is content put somewhere else, and `serialise` of the con
 server asks what went there. Hold the container in a `useMemo` rather than looking it up on every
 render — `byId` mints a fresh handle each time, and a portal handed a different container is a
 different portal.
+
+## App state
+
+**An atom is a value that lives outside any component's own tree, read by whichever components ask
+for it.** A context also hands a value to a subtree, but the two move in opposite directions: a
+context's value changes because a component *above* the consumer re-rendered, while an atom changes
+because something *outside* the tree wrote it — a handler, a timer, a socket — and nothing above the
+component is rendering at all.
+
+```
+import { atom, useAtom, useAtomValue } from lath
+
+val count = atom(0)
+val doubled = atom(get -> get(count) * 2)
+
+Counter(props) =
+    val [n, setN] = useAtom(count)
+
+    <button onClick={() -> setN(n + 1)}>{string(n)}</button>
+
+Twice(props) = <p>{string(useAtomValue(doubled))}</p>
+```
+
+`atom(initial)` makes a primitive one; `atom(get -> ...)` makes a derived one, read-only, that tracks
+whatever it actually asked for on its last computation — no dependency list to get wrong. A derived
+atom becomes writable with a second argument, `atom(read, (get, set, v) -> ...)`, which may set
+anything, not only what its own `read` reads.
+
+**Every atom's value lives in a store, and `defaultStore()` is the one a program that never mentioned
+one is using.** `useAtomValue` subscribes the component to that atom alone, so a component renders
+when what *it* read changed and not otherwise; `useSetAtom` writes without subscribing, for a handler
+that only ever sets a value it does not show. `useAtom` is the pair.
+
+A store may be written from outside a component the same way a handler would — `defaultStore().set(count, 5)` —
+and every subscribed component moves on the next `flush`.
+
+**A server rendering two requests at once needs two sets of values for one set of atoms**, which is
+what `createStore()` and `<Provider store={...}>` are for: a fresh store per request, scoping the
+atoms underneath it, so that `html(root)` of two of them is two independent answers rather than one
+request's numbers leaking into another's page.
 
 ## Hydration
 

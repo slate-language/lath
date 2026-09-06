@@ -1,0 +1,49 @@
+import { createElement, Fragment, mount, hydrate, html, flush, useAtomValue, atom,
+    defaultStore } from "../lath.slx"
+import { domHost } from "../dom.slx"
+import { at, shown, mutations } from "./probe.slx"
+
+// Atoms hydrated against a real document, measured the same way `tests-dom/hydrate.slx` measures
+// everything else: a `MutationObserver` rather than a count of what the host was asked for.
+//
+// **Reading an atom is not itself state a component owns**, so hydrating a page that reads one
+// ought to be exactly as quiet as hydrating anything else -- nothing here should touch the DOM
+// until something outside the tree writes the atom.
+
+@test
+async A_HYDRATED_ATOM_READ_MAKES_NO_MUTATIONS_AT_ALL()
+    val count = atom(7)
+
+    Show(props: object) = <p id="count">{string(useAtomValue(count))}</p>
+
+    val markup = html(mount(<Show/>))
+
+    at(markup)
+
+    await sleep(1)
+
+    val before = mutations()
+
+    hydrate(<Show/>, domHost("#page"))
+
+    await sleep(1)
+
+    assertEq(mutations() - before, 0)
+    assertEq(shown(), "<div id=\"page\">" + markup + "</div>")
+
+@test
+SETTING_THE_ATOM_AFTER_HYDRATION_UPDATES_THE_PAGE_ONCE()
+    val count = atom(0)
+
+    Show(props: object) = <p id="count">{string(useAtomValue(count))}</p>
+
+    at(html(mount(<Show/>)))
+
+    val root = hydrate(<Show/>, domHost("#page"))
+
+    assertEq(shown(), "<div id=\"page\"><p id=\"count\">0</p></div>")
+
+    defaultStore().set(count, 1)
+    flush(root)
+
+    assertEq(shown(), "<div id=\"page\"><p id=\"count\">1</p></div>")

@@ -1,0 +1,191 @@
+import { createElement, Fragment, mount, html, flush, useSetAtom, useAtom, useAtomValue,
+    atom, createStore, defaultStore, Provider } from "../lath.slx"
+
+// Atoms -- state a component reads without it living in any component's own tree, and without a
+// context threading it through everything in between.
+
+fell(f) -> string =
+    var said = ""
+
+    try
+        f()
+    catch e
+        said = e.message
+
+    said
+
+@test
+A_PRIMITIVE_ATOM_IS_READ_AND_SET_FROM_A_COMPONENT()
+    val count = atom(0)
+
+    var setCount = null
+
+    Counter(props) =
+        val [n, setN] = useAtom(count)
+
+        setCount = setN
+
+        <p>{string(n)}</p>
+
+    val root = mount(<Counter/>)
+
+    assertEq(html(root), "<p>0</p>")
+
+    setCount(n -> n + 1)
+    flush(root)
+
+    assertEq(html(root), "<p>1</p>")
+
+@test
+A_DERIVED_ATOM_RECOMPUTES_FROM_WHAT_IT_READS()
+    val count = atom(3)
+    val doubled = atom(get -> get(count) * 2)
+
+    Twice(props) = <p>{string(useAtomValue(doubled))}</p>
+
+    val root = mount(<Twice/>)
+
+    assertEq(html(root), "<p>6</p>")
+
+    defaultStore().set(count, 10)
+    flush(root)
+
+    assertEq(html(root), "<p>20</p>")
+
+@test
+A_WRITABLE_DERIVED_ATOM_WRITES_THROUGH_ITS_OWN_SET()
+    // `doubled` reads `count` and its write hands `count` straight to `set` -- the derived atom's
+    // own way of saying what setting it means.
+    val count = atom(1)
+    val doubled = atom(
+        get -> get(count) * 2,
+        (get, set, v) -> set(count, v))
+
+    var setDoubled = null
+
+    View(props) =
+        val n = useAtomValue(count)
+        val d = useAtomValue(doubled)
+
+        setDoubled = useSetAtom(doubled)
+
+        <p>{string(n)} {string(d)}</p>
+
+    val root = mount(<View/>)
+
+    assertEq(html(root), "<p>1 2</p>")
+
+    setDoubled(5)
+    flush(root)
+
+    assertEq(html(root), "<p>5 10</p>")
+
+@test
+AN_ATOM_SET_FROM_OUTSIDE_A_COMPONENT_REACHES_IT()
+    // No handler, no ref -- a store is written directly, the way a socket callback or a timer
+    // would, and the component that reads the atom moves anyway.
+    val count = atom(0)
+
+    Show(props) = <p>{string(useAtomValue(count))}</p>
+
+    val root = mount(<Show/>)
+
+    defaultStore().set(count, 7)
+    flush(root)
+
+    assertEq(html(root), "<p>7</p>")
+
+@test
+ONLY_COMPONENTS_THAT_READ_AN_ATOM_RE_RENDER()
+    val a = atom(0)
+    val b = atom(0)
+
+    var rendersA = 0
+    var rendersB = 0
+
+    ReadsA(props) =
+        val n = useAtomValue(a)
+
+        rendersA = rendersA + 1
+
+        <p>{string(n)}</p>
+
+    ReadsB(props) =
+        val n = useAtomValue(b)
+
+        rendersB = rendersB + 1
+
+        <p>{string(n)}</p>
+
+    val root = mount(<div><ReadsA/><ReadsB/></div>)
+
+    assertEq(rendersA, 1)
+    assertEq(rendersB, 1)
+
+    defaultStore().set(a, 1)
+    flush(root)
+
+    assertEq(rendersA, 2)
+    assertEq(rendersB, 1)
+
+@test
+TWO_STORES_HOLDING_THE_SAME_ATOM_ARE_TWO_SETS_OF_VALUES()
+    // **The reason a store exists at all.** A server rendering two requests at once has one atom
+    // and two answers, and nothing but the store the render was given says which is which.
+    val count = atom(1)
+
+    Show(props) = <p>{string(useAtomValue(count))}</p>
+
+    val s1 = createStore()
+    val s2 = createStore()
+
+    s1.set(count, 10)
+    s2.set(count, 20)
+
+    val r1 = mount(<Provider store={s1}><Show/></Provider>)
+    val r2 = mount(<Provider store={s2}><Show/></Provider>)
+
+    assertEq(html(r1), "<p>10</p>")
+    assertEq(html(r2), "<p>20</p>")
+
+@test
+A_PROVIDER_SCOPES_ONLY_ITS_OWN_SUBTREE()
+    val count = atom(1)
+
+    Show(props) = <p>{string(useAtomValue(count))}</p>
+
+    val s = createStore()
+
+    s.set(count, 99)
+
+    // The first `Show` has no `Provider` above it, so it reads the default store and gets the
+    // atom's own initial value; the second is inside `s` and gets what was written there.
+    val root = mount(<div><Show/><Provider store={s}><Show/></Provider></div>)
+
+    assertEq(html(root), "<div><p>1</p><p>99</p></div>")
+
+@test
+READING_SOMETHING_THAT_IS_NOT_AN_ATOM_FAULTS()
+    Bad(props) = <p>{string(useAtomValue(42))}</p>
+
+    val said = fell(() -> mount(<Bad/>))
+
+    assert(contains(said, "useAtomValue is given an atom"))
+
+@test
+WRITING_A_READ_ONLY_DERIVED_ATOM_FAULTS()
+    val count = atom(1)
+    val doubled = atom(get -> get(count) * 2)
+
+    var setDoubled = null
+
+    View(props) =
+        setDoubled = useSetAtom(doubled)
+
+        <p>{string(useAtomValue(doubled))}</p>
+
+    mount(<View/>)
+
+    val said = fell(() -> setDoubled(4))
+
+    assert(contains(said, "cannot be set"))
