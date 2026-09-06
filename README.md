@@ -546,6 +546,11 @@ written beside it.
 
 ## Requirements
 
+slate **0.0.37** or newer as of lath 0.7.1, and the floor moved because `slate:dom` grew `focus`, `blur` and
+`activeElement`: the DOM test harness used to fake the caret with a property setter on
+`HTMLElement.prototype` and a republished `data-active` attribute, and `tests-dom/probe.slx` now
+calls the real names instead.
+
 slate **0.0.35** or newer as of lath 0.7.0, and the floor moved because `len` was removed in favour
 of the `.length` property.
 

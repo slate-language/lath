@@ -97,13 +97,10 @@ let touched = 0
 let prevented = false
 
 const publish = () => {
-    const on = doc.activeElement
-
     probe.setAttribute("data-mutations", String(records))
     probe.setAttribute("data-touched", String(touched))
     probe.setAttribute("data-navigations", String(navigations))
     probe.setAttribute("data-prevented", prevented ? "true" : "false")
-    probe.setAttribute("data-active", on ? (on.id || on.tagName.toLowerCase()) : "")
 }
 
 publish()
@@ -164,24 +161,6 @@ Object.defineProperty(w.Element.prototype, "lathEvent", {
 
         prevented = event.defaultPrevented
 
-        publish()
-    }
-})
-
-// **Focus, which is the fourth thing a slate program cannot ask for and the DOM has no attribute
-// for.** It is the same accessor trick as `lathEvent` above: a property assignment on an element is
-// exactly what `setProperty` is, and jsdom does the focusing. What it is for is the claim a surgical
-// reorder makes and a whole-child-list write cannot: a row that MOVED keeps the caret in it, and a
-// row that was rebuilt has taken the caret with it.
-//
-// **Which element has it is published as `data-active` by `publish` above**, so it is re-read after
-// every mutation the observer sees -- which is what makes it answerable AFTER a reorder rather than
-// only at the moment something was focused.
-Object.defineProperty(w.HTMLElement.prototype, "lathFocus", {
-    configurable: true,
-
-    set(_) {
-        this.focus()
         publish()
     }
 })
