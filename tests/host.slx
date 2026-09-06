@@ -44,7 +44,7 @@ THE_HOST_IS_HANDED_THE_TOP_OF_THE_TREE_WHEN_THE_TREE_IS_MOUNTED()
     mount(<p>hello</p>, host)
 
     assert(host.seen.mounts == 1)
-    assert(host.seen.into.len() == 1)
+    assert(host.seen.into.length == 1)
 
 @test
 IT_IS_HANDED_THEM_AGAIN_ON_EVERY_COMMIT_AND_NOT_ONLY_THE_FIRST()
@@ -67,13 +67,13 @@ IT_IS_HANDED_THEM_AGAIN_ON_EVERY_COMMIT_AND_NOT_ONLY_THE_FIRST()
     val root = mount(<App/>, host)
 
     assert(host.seen.mounts == 1)
-    assert(host.seen.into.len() == 2)
+    assert(host.seen.into.length == 2)
 
     setter(false)
     flush(root)
 
     assert(host.seen.mounts == 2)
-    assert(host.seen.into.len() == 1)
+    assert(host.seen.into.length == 1)
 
 @test
 A_NODE_THE_FRAMEWORK_DROPS_IS_GIVEN_BACK_TO_THE_HOST()

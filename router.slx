@@ -55,7 +55,7 @@ export cleanPath(url: string) -> string =
     var s = bareOf(url)
 
     if s == "" then s = "/"
-    if len(s) > 1 && endsWith(s, "/") then s = s[0..<len(s) - 1]
+    if s.length > 1 && endsWith(s, "/") then s = s[0..<s.length - 1]
 
     s
 
@@ -150,12 +150,12 @@ export matchPath(template: string, path: string) -> object =
     val want = segmentsOf(template)
     val got = segmentsOf(path)
 
-    if len(want) != len(got) then return null
+    if want.length != got.length then return null
 
     var params = {}
     var i = 0
 
-    while i < len(want)
+    while i < want.length
         val w = want[i]
 
         if startsWith(w, ":")
@@ -289,7 +289,7 @@ plainClick(e: object) -> boolean =
 // Whether a destination is one this page can render, which is a path of its own and not a URL
 // somewhere else. `//elsewhere.example` is another origin written the short way.
 ourOwn(to: string) -> boolean =
-    len(to) > 0 && to[0..<1] == "/" && !startsWith(to, "//")
+    to.length > 0 && to[0..<1] == "/" && !startsWith(to, "//")
 
 // An anchor that a router intercepts.
 //

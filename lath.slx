@@ -227,7 +227,7 @@ hookCell(fresh: object) -> object =
 
     slot = slot + 1
 
-    if i >= inst.hooks.len() then push(inst.hooks, fresh)
+    if i >= inst.hooks.length then push(inst.hooks, fresh)
 
     inst.hooks[i]
 
@@ -270,7 +270,7 @@ flatten(kids: array, out: array) -> array =
 
         if kid is array
             flatten(kid, out)
-        elif isText(kid) && out.len() > 0 && isText(out[out.len() - 1])
+        elif isText(kid) && out.length > 0 && isText(out[out.length - 1])
             push(out, string(pop(out)) + string(kid))
         else
             push(out, kid)
@@ -403,7 +403,7 @@ claimText(root: object, want: string) =
 // is the pair it cannot join -- a text child standing beside a component that renders text, the two
 // living in different instances. The answer is a single expression: `<p>{"hello " + name}</p>`.
 runOn(want: string, found: string) -> string =
-    if want == "" || found.len() <= want.len() || found[0..<want.len()] != want then return ""
+    if want == "" || found.length <= want.length || found[0..<want.length] != want then return ""
 
     // **The brackets are what continue the line**, a trailing `+` outside a bracket pair not being a
     // continuation in slate.
@@ -661,14 +661,14 @@ reconcileKids(inst: object, kids: array) =
     inst.kids = next
     inst.left = old
 
-    for i in 0..<wanted.len()
+    for i in 0..<wanted.length
         val el = wanted[i]
         val found = takeMatch(old, used, el, i)
 
         push(next, reconcile(inst.root, inst, found, el))
 
     // Whatever was not matched is gone, and its effects have to be undone.
-    for i in 0..<old.len()
+    for i in 0..<old.length
         if !contains(used, i) then unmount(old[i])
 
     inst.left = []
@@ -680,7 +680,7 @@ takeMatch(old: array, used: array, el, i: integer) =
     val key = if el is string || el is number then null else el.key ?? null
 
     if key != null
-        for j in 0..<old.len()
+        for j in 0..<old.length
             if !contains(used, j) && old[j].key == key
                 push(used, j)
 
@@ -688,7 +688,7 @@ takeMatch(old: array, used: array, el, i: integer) =
 
         return null
 
-    if i < old.len() && !contains(used, i) && old[i].key == null
+    if i < old.length && !contains(used, i) && old[i].key == null
         push(used, i)
 
         return old[i]
@@ -838,7 +838,7 @@ export html(root: object) -> string = root.host.serialise(nodesOf(root.inst))
 // is React's batching and is what stops a handler from being able to see a half-updated tree.
 export flush(root: object) =
     loop
-        if root.pending.len() == 0 then break
+        if root.pending.length == 0 then break
 
         val waiting = root.pending
 
@@ -1302,8 +1302,8 @@ export createStore() -> Store =
 
         // **Recorded BEFORE the value is worked out**, so that a read reading a read registers the
         // dependency against the frame that was already there rather than against its own.
-        if frames.len() > 0
-            val frame = frames[frames.len() - 1]
+        if frames.length > 0
+            val frame = frames[frames.length - 1]
 
             if frame.deps.indexOf(a) == null then push(frame.deps, a)
 
@@ -1313,9 +1313,9 @@ export createStore() -> Store =
             cell.value = a.read(get)
             cell.valid = true
 
-            val mine = frames[frames.len() - 1]
+            val mine = frames[frames.length - 1]
 
-            frames = frames[0..<frames.len() - 1]
+            frames = frames[0..<frames.length - 1]
 
             depend(a, cell, mine.deps)
 

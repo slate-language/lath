@@ -60,7 +60,7 @@ listing(host, first: array) -> object =
 
 clear(xs: array) =
     loop
-        if xs.len() == 0 then break
+        if xs.length == 0 then break
 
         removeAt(xs, 0)
 
@@ -153,7 +153,7 @@ THE_COUNT_IS_THE_SIZE_OF_THE_CHANGE_AND_NOT_THE_SIZE_OF_THE_LIST()
     for i in 0..<27
         push(moved, "r" + string(i))
 
-    assertEq(after(it, moved).len(), 3)
+    assertEq(after(it, moved).length, 3)
 
     // And the rows themselves were never rebuilt, which is what makes the moves moves.
     assert(contains(html(it.root), "<ul><li>r27</li><li>r28</li><li>r29</li><li>r0</li>"))
@@ -181,7 +181,7 @@ A_LIST_EMPTIED_REMOVES_EVERY_ROW_AND_A_LIST_FILLED_INSERTS_EVERY_ROW()
     clear(host.seen.ops)
 
     // Four: each new row's text into its own `<li>`, and each `<li>` into the list.
-    assertEq(after(it, ["a", "b"]).len(), 4)
+    assertEq(after(it, ["a", "b"]).length, 4)
     assertEq(html(it.root), "<ul><li>a</li><li>b</li></ul>")
 
 @test

@@ -101,7 +101,7 @@ pageHost(top: array) =
     adopt(parent, index: integer) =
         val kids = (parent ?? root).kids
 
-        if index >= kids.len() then return null
+        if index >= kids.length then return null
 
         val node = kids[index]
 
@@ -121,7 +121,7 @@ pageHost(top: array) =
       patch: patch, styles: styles, where: "page", seen: seen }
 
 isOn(name: string) -> boolean =
-    name.len() > 2 && name[0..<2] == "on" && name[2] == name[2].upper()
+    name.length > 2 && name[0..<2] == "on" && name[2] == name[2].upper()
 
 draw(node: object) -> string =
     if node.tag == null then return node.text

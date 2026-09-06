@@ -222,7 +222,7 @@ export domHost(into: string) -> Host =
     // a component rendered for itself out of this: that one is part of the tree, is adopted like any
     // other element, and would be claimed by the render that produced it.
     claimSheets(list: array) =
-        while list.len() > 0 && tagName(list[0]) == "style" && attribute(list[0], "data-lath-style") != null
+        while list.length > 0 && tagName(list[0]) == "style" && attribute(list[0], "data-lath-style") != null
             push(own, list[0])
             removeAt(list, 0)
 
@@ -321,7 +321,7 @@ export domHost(into: string) -> Host =
         val into = parent ?? el
         val list = held(into)
 
-        if list.len() == 0
+        if list.length == 0
             for kid in children(into)
                 push(list, kid)
 
@@ -329,7 +329,7 @@ export domHost(into: string) -> Host =
             // out of it here -- once, on the way in, before the framework has asked for anything.
             if into == el then claimSheets(list)
 
-        if index >= list.len() then return null
+        if index >= list.length then return null
 
         val node = list[index]
 
@@ -366,7 +366,7 @@ listen(hands: object, node: integer, name: string, f) =
     null
 
 isHandler(name: string) -> boolean =
-    name.len() > 2 && name[0..<2] == "on" && name[2] == name[2].upper()
+    name.length > 2 && name[0..<2] == "on" && name[2] == name[2].upper()
 
 // What the page would answer for an attribute set to this value, which is the thing a comparison
 // before writing has to be made against.

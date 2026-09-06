@@ -45,7 +45,7 @@ A_COLON_SEGMENT_BINDS_ONE_SEGMENT_AND_NEVER_A_SLASH()
 A_ROUTE_THAT_MATCHES_WITH_NO_PARAMETERS_IS_NOT_A_ROUTE_THAT_DID_NOT_MATCH()
     // **Which is why the answer is `null` rather than an empty record.** `{}` is perfectly ordinary
     // for `/about`, so a matcher answering `{}` for both would make the two indistinguishable.
-    assertEq(len(keys(matchPath("/about", "/about"))), 0)
+    assertEq(keys(matchPath("/about", "/about")).length, 0)
     assertEq(matchPath("/about", "/elsewhere"), null)
 
 @test
@@ -114,7 +114,7 @@ A_PERCENT_ENCODED_SEGMENT_IS_DECODED_AND_OVER_BYTES()
     val bound = matchPath("/who/:name", "/who/caf%C3%A9")
 
     assertEq(bound.name, "café")
-    assertEq(len(bound.name), 4)
+    assertEq(bound.name.length, 4)
 
 @test
 A_LINK_IS_A_REAL_ANCHOR_AND_CARRIES_THE_MARK()

@@ -88,14 +88,14 @@ export hostSetText(node: object, s: string) =
 // **Either way it is one `<style>` per distinct sheet and never one per component**, `style(css)`
 // having already made the list distinct.
 export serialiseNodes(nodes: array, sheets: array = []) -> string =
-    val toHead = sheets.len() > 0 && hasHead(nodes)
+    val toHead = sheets.length > 0 && hasHead(nodes)
 
     var out = ""
 
     for node in nodes
         out = out + serialiseNode(node, if toHead then sheets else [])
 
-    if sheets.len() == 0 || toHead then return out
+    if sheets.length == 0 || toHead then return out
 
     styleTags(sheets) + out
 
@@ -157,7 +157,7 @@ attributes(props: object) -> string =
     out
 
 isHandler(name: string) -> boolean =
-    name.len() > 2 && name[0..<2] == "on" && name[2] == name[2].upper()
+    name.length > 2 && name[0..<2] == "on" && name[2] == name[2].upper()
 
 isVoid(tag: string) -> boolean =
     ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"].indexOf(tag) != null

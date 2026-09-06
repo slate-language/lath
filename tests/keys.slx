@@ -171,6 +171,6 @@ A_NESTED_COMPONENTS_STATE_SURVIVES_ITS_PARENT_RE_RENDERING()
 
 clear(xs) =
     loop
-        if xs.len() == 0 then break
+        if xs.length == 0 then break
 
         removeAt(xs, 0)

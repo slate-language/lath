@@ -43,9 +43,9 @@ Names(props: object) =
 
     // The last name moved to the front, which is one move and not four.
     rotate() =
-        var next = [names[names.len() - 1]]
+        var next = [names[names.length - 1]]
 
-        for i in 0..<names.len() - 1
+        for i in 0..<names.length - 1
             push(next, names[i])
 
         setNames(next)
