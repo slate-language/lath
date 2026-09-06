@@ -208,6 +208,9 @@ go(to, opts = null)
     setUrl(to)
 ```
 
+**A page that does this listens for the back button itself**, with `onNavigate` — and `usePath` then
+leaves that handler alone, `slate:dom` keeping exactly one of them for the whole program.
+
 **That outranks the one `usePath` installs, and having two slots rather than one is deliberate.**
 `useSearch` reads the address bar through `usePath`, so every control that wants a sort order or a
 page number registers the built-in navigator as a side effect of asking for the query. Into one slot,
@@ -507,6 +510,12 @@ component. **`insertBefore` and `removeChild` on `slate:dom`** are what let the 
 reconciler's operations as operations: reordering three rows of a thousand was three correct
 decisions and one `replaceChildren` of a thousand nodes until 0.0.30, and is now six mutation records
 and nothing for the rows that stayed.
+
+**0.5.3 is the back button, which is the same fact one layer down.** `slate:dom`'s `onNavigate` keeps
+ONE handler for the whole program and the last registration wins, so `usePath` listening on behalf of
+a control that asked for the query took the back button off a page that had installed a listener of
+its own. It does not listen at all now where a page installed a navigator with `navigateWith` — that
+page owns the handler, and its own render is what carries the address to every hook here.
 
 **0.5.2 changes nothing about `Host` either.** What it changes is which navigator a `Link` calls:
 what a program installed with `navigateWith` now outranks the one `usePath` installs for a page that

@@ -1,7 +1,7 @@
 import { createElement, Fragment, mount, useEffect, useState } from "../lath.slx"
 import { router, Link, Anything, navigateWith, useSearch } from "../router.slx"
 import { domHost, usePath } from "../dom.slx"
-import { location, pushPath, back, byId } from slate:dom
+import { location, pushPath, back, byId, onNavigate } from slate:dom
 import { at, click, says, shown, navigations, prevented } from "./probe.slx"
 
 // The router against a real document: a link is clicked, the address bar moves, the view changes --
@@ -185,8 +185,16 @@ Own(props: object) =
 
     goes = go
 
+    // **What a page listening for the back button itself looks like**, which is what `client.slx`
+    // does: a push does not raise `onNavigate`, so a movement the reader made is the only thing this
+    // hears, and it is the page's own state that has to follow it.
+    moved(where)
+        push(went, where)
+        setHere(where)
+
     wire()
         navigateWith(go)
+        onNavigate(moved)
 
         null
 
@@ -233,3 +241,36 @@ async AND_A_CONTROL_ASKING_FOR_THE_QUERY_SEES_THE_MOVE_THE_PAGE_MADE()
 
     assertEq(location().query, "?sort=newest")
     assertEq(says("sort"), "newest")
+
+@test
+async AND_THE_BACK_BUTTON_STILL_REACHES_A_PAGE_THAT_LISTENS_FOR_IT_ITSELF()
+    // **`onNavigate` KEEPS ONE HANDLER FOR THE WHOLE PROGRAM.** `slate:dom` writes `popped = f`, so
+    // the last registration wins -- and a hook that listened for a movement on behalf of a control
+    // asking for the query would take the back button off a page that had already asked for it. The
+    // page would then hear nothing: the address would move and the view would stay where it was,
+    // which is the same symptom the two tests above are about, arriving by the other door.
+    owned()
+
+    click("#toNote")
+
+    await sleep(1)
+
+    assertEq(location().path, "/notes/7")
+
+    back()
+
+    await sleep(50)
+
+    assertEq(location().path, "/")
+
+    // **The page heard the movement itself**, which is what the second entry says: the first is the
+    // click and the second is the back button arriving at the page's own listener rather than at a
+    // hook that had taken the one handler there is.
+    assertEq(went, ["/notes/7?sort=newest", "/"])
+    assertEq(says("view"), "at /, a note none")
+
+// **What one file installed, put back.** `navigate` is module state for the whole program, so a page
+// that said what a link means here would still be saying it in the file that runs next.
+@teardown
+nobodysNavigator()
+    navigateWith(null)

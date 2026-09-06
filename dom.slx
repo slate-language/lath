@@ -15,7 +15,7 @@ import { insertBefore, removeChild } from slate:dom
 import { children, tagName, nodeText, attribute } from slate:dom
 import { location, pushPath, replacePath, onNavigate } from slate:dom
 import { Host, useState, useEffect } from "./lath.slx"
-import { navigatesWith, addressIs, addressWith } from "./router.slx"
+import { navigatesWith, addressIs, addressWith, ownsNavigation } from "./router.slx"
 
 // A host over one element of the page.
 //
@@ -395,9 +395,10 @@ pageValue(value) =
 // query the page had before, in links a reader is about to click.
 var watching = []
 
-// Whether the back button has been listened for. **Once per program and not once per component**,
-// `slate:dom` keeping one handler per registration.
-var wired = false
+// Whether this file has offered its navigator. **Once per program and not once per component**, and
+// there is no second flag beside it: whether the back button is this file's to listen for is a
+// question with a changing answer, asked in `listening` on every wire.
+var offered = false
 
 // The address bar has moved, however it moved: the router module told, and every hook asked to
 // render again.
@@ -424,12 +425,25 @@ moving(to, opts = null) =
 
     told(to)
 
+// What this file installs for itself, and the one thing it must not install over a page.
+//
+// **`onNavigate` KEEPS ONE HANDLER FOR THE WHOLE PROGRAM AND THE LAST REGISTRATION WINS.** It is not
+// a list `slate:dom` adds to -- `popped = f` is the whole of it -- so a hook that listened would take
+// the back button from a page that had already said what a movement means, and that page would then
+// hear nothing at all: the address would move, the view would stay, and the only thing that had
+// happened is that a control somewhere below asked for the query. A page that owns navigation owns
+// this handler, and its own render is what carries the address to every hook here.
 listening() =
-    if wired then return null
+    if !offered
+        offered = true
 
-    wired = true
+        navigatesWith(moving)
 
-    navigatesWith(moving)
+    // **Asked on every wire rather than once**, because the answer can change: a page that installs
+    // its navigator after the first control has asked for the query still owns the back button from
+    // that moment, and this must not take it back on the next control that renders.
+    if ownsNavigation() then return null
+
     onNavigate(told)
 
     null
@@ -479,9 +493,9 @@ export usePath() -> string =
     // server sets it from the request and this sets it from the address bar.
     addressIs(here)
 
-    // **Installed once and not on every render**, which is what the empty dependency list says. A
-    // second `onNavigate` would be a second handler for one movement: `slate:dom` keeps one handler
-    // per registration, so a page re-rendering fifty times would hold fifty of them.
+    // **Installed once and not on every render**, which is what the empty dependency list says: this
+    // is where the hook joins the list every movement is told to, and a component on it fifty times
+    // would render fifty times for one press of back.
     //
     // **What is registered is a CLEANUP as well**, a component that has gone being one this must
     // stop asking to render -- `invalidate` refuses an instance that is gone, but the hook cell it

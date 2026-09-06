@@ -1,6 +1,6 @@
 {
     name: "lath",
-    version: "0.5.2",
+    version: "0.5.3",
 
     // What a bare `import ... from lath` reaches. The framework proper: elements, components,
     // hooks and the reconciler, and nothing that needs a browser.

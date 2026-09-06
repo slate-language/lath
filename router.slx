@@ -269,6 +269,14 @@ export navigatesWith(f) =
 // every server, and a page that has imported neither a document nor a navigator of its own.
 mover() = navigate ?? builtIn
 
+// Whether a program installed a navigator of its own.
+//
+// **`lath/dom` asks this before it takes the back button, and `slate:dom` is why.** `onNavigate`
+// keeps ONE handler for the whole program and the last registration wins -- so a hook listening for
+// a movement would silently take the listener from a page that had installed one, and the page would
+// stop hearing the back button altogether. A page that says what a movement means owns that handler.
+export ownsNavigation() -> boolean = navigate != null
+
 // Whether a click is one the router may take, or one the browser must have.
 //
 // **The modifiers and the button are the whole of it, and without them a router swallows the most
