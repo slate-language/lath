@@ -1,5 +1,5 @@
-import { createElement, Fragment, mount } from "../lath.slx"
-import { router, Link, Anything } from "../router.slx"
+import { createElement, Fragment, mount, useEffect, useState } from "../lath.slx"
+import { router, Link, Anything, navigateWith, useSearch } from "../router.slx"
 import { domHost, usePath } from "../dom.slx"
 import { location, pushPath, back, byId } from slate:dom
 import { at, click, says, shown, navigations, prevented } from "./probe.slx"
@@ -146,3 +146,90 @@ async THE_BACK_BUTTON_MOVES_THE_VIEW_AND_A_PUSH_DOES_NOT_RAISE_ONE()
 
     assertEq(location().path, "/")
     assertEq(says("view"), "home, and a note")
+
+// -- an application that holds the address itself ---------------------------------------------------
+
+// **A page may mean more by following a link than moving the view**, and the board does: it fetches
+// the record the next page renders from, keeps it in state and writes `<html data-theme>` beside it.
+// So it says what a link means with `navigateWith` and holds the URL in a `useState` of its own,
+// which is the arrangement these two check -- and the one that broke.
+//
+// **What made it break is that asking for the query INSTALLS a navigator.** `useSearch` reads the
+// address bar through `usePath`, so every control that wants a sort or a page number -- three of them
+// on the board's front page -- registered `usePath`'s own `go` as a side effect of asking. One slot
+// meant the last of them won: a click moved the address bar and re-rendered that one control, the
+// application never heard, and the page sat there. In a real browser it looked like state setters had
+// stopped working; the address bar moved and nothing else happened at all.
+
+// Where the application's own navigator was asked to go.
+var went = []
+
+// And the navigator itself, so that a test can move the page the way the application does -- which is
+// not a click on a link and is the case a hook holding its own copy of the path gets wrong.
+var goes = null
+
+// A control that wants nothing but the query, which is what every sort control and pager is.
+Sorting(props: object) =
+    val [q, set] = useSearch()
+
+    <span id="sort">{q.sort ?? "none"}</span>
+
+// The page, holding the address itself the way an application that fetches on navigation must.
+Own(props: object) =
+    val [here, setHere] = useState("/")
+
+    go(to, opts = null)
+        push(went, to)
+        pushPath(to)
+        setHere(to)
+
+    goes = go
+
+    wire()
+        navigateWith(go)
+
+        null
+
+    useEffect(wire, [])
+
+    <p id="view">at {here}, <Link to="/notes/7?sort=newest" id="toNote">a note</Link> <Sorting/></p>
+
+owned() =
+    went = []
+
+    pushPath("/")
+    at("")
+
+    mount(<Own/>, domHost("#page"))
+
+@test
+async A_PAGE_THAT_SAID_WHAT_A_LINK_MEANS_IS_THE_ONE_A_CLICK_REACHES()
+    // **The assertion the whole two-slot arrangement exists for.** A control below asked for the
+    // query, which installs the built-in navigator; what a `Link` calls is still the one this page
+    // said, because a program's own answer outranks the one a hook installs for a page that gave none.
+    owned()
+
+    click("#toNote")
+
+    await sleep(1)
+
+    assertEq(went, ["/notes/7?sort=newest"])
+    assertEq(location().path, "/notes/7")
+    assert(contains(says("view"), "at /notes/7?sort=newest"), says("view"))
+
+@test
+async AND_A_CONTROL_ASKING_FOR_THE_QUERY_SEES_THE_MOVE_THE_PAGE_MADE()
+    // **The other half: one address bar, read and not copied.** The move here is made by the page's
+    // own navigator and not by a click, which is exactly the movement `usePath` never hears about --
+    // a hook holding a copy of the path would show the query the page had before, in links a reader is
+    // about to click. Every call reads the address bar instead, so any render at all is up to date.
+    owned()
+
+    assertEq(says("sort"), "none")
+
+    goes("/notes/7?sort=newest")
+
+    await sleep(1)
+
+    assertEq(location().query, "?sort=newest")
+    assertEq(says("sort"), "newest")

@@ -15,7 +15,7 @@ import { insertBefore, removeChild } from slate:dom
 import { children, tagName, nodeText, attribute } from slate:dom
 import { location, pushPath, replacePath, onNavigate } from slate:dom
 import { Host, useState, useEffect } from "./lath.slx"
-import { navigateWith, addressIs, addressWith } from "./router.slx"
+import { navigatesWith, addressIs, addressWith } from "./router.slx"
 
 // A host over one element of the page.
 //
@@ -387,6 +387,64 @@ pageValue(value) =
 
 // -- the address bar ------------------------------------------------------------------------------
 
+// Every `usePath` on the page, so that ONE movement re-renders all of them.
+//
+// **A page has one address bar and any number of components asking where it is** -- a router at the
+// top, a sort control, a pager, a tag list -- and each of them asks through this hook. A movement
+// told to only one of them is the defect this list removes: the others would keep rendering the
+// query the page had before, in links a reader is about to click.
+var watching = []
+
+// Whether the back button has been listened for. **Once per program and not once per component**,
+// `slate:dom` keeping one handler per registration.
+var wired = false
+
+// The address bar has moved, however it moved: the router module told, and every hook asked to
+// render again.
+told(where: string) =
+    addressIs(where)
+
+    for tell in watching
+        tell()
+
+    null
+
+// What a `Link` does on a page that never said what following one means.
+//
+// **`pushPath` does NOT raise `onNavigate`** -- a browser raises `popstate` for a movement the user
+// made and never for one the program made itself -- so a push tells the hooks itself, and the
+// listener below is only ever the back and forward buttons.
+//
+// **`opts` decides which of the two ways of moving this is, and the default is a PUSH.** A `Link` is
+// a place somebody went and belongs in the history; rewriting a query as somebody types is not, and
+// `useSearch` asks for a replace. Nothing said is a push, which is what every caller written before
+// there were two meant.
+moving(to, opts = null) =
+    if opts == null || opts.push != false then pushPath(to) else replacePath(to)
+
+    told(to)
+
+listening() =
+    if wired then return null
+
+    wired = true
+
+    navigatesWith(moving)
+    onNavigate(told)
+
+    null
+
+// One hook's ask taken off the list, its component having gone.
+forget(tell) =
+    var kept = []
+
+    for one in watching
+        if one != tell then push(kept, one)
+
+    watching = kept
+
+    null
+
 // The path the page is at, as state, so that a component re-renders when the page moves.
 //
 //     val here = usePath()
@@ -398,47 +456,47 @@ pageValue(value) =
 // about an address bar is here, in the file that already owns the one import working in one host out
 // of three.
 //
-// It does three things, and they are three halves of one arrangement: it holds the current path, it
-// tells `Link` to push rather than follow, and it listens for the back button.
+// It does three things, and they are three halves of one arrangement: it reads the current path, it
+// tells `Link` to push rather than follow where the page has said nothing else, and it listens for
+// the back button.
+//
+// **THE ADDRESS BAR IS THE STATE, AND WHAT THE HOOK KEEPS IS ONLY A REASON TO RENDER AGAIN.** Every
+// call reads `location()`, so a component that renders for any reason at all shows where the page is
+// NOW -- and a movement made by an application's own navigator, which this hook never hears about,
+// is seen by every `useSearch` on the page rather than by the one component whose state was set.
+// A copy of the path per hook was the alternative, and copies of one fact is what a stale query is.
 export usePath() -> string =
     val at = location()
-    val [path, setPath] = useState(at.path + at.query + at.hash)
+    val here = at.path + at.query + at.hash
+
+    // **A count and not the path**, so that a movement is a re-render whatever the count was: a
+    // component holding "/notes" while the address bar has moved twice and come back would compare
+    // its own copy equal and never render.
+    val [seen, again] = useState(0)
 
     // **`lath/router` is told where the page is on every render**, which is what lets `useSearch`
     // answer the same query on a server and in a browser: the router module holds one address, a
     // server sets it from the request and this sets it from the address bar.
-    addressIs(path)
-
-    // **`pushPath` does NOT raise `onNavigate`** -- a browser raises `popstate` for a movement the
-    // user made and never for one the program made itself -- so a push has to set the state too, and
-    // the listener below is only ever the back and forward buttons.
-    //
-    // **`opts` decides which of the two ways of moving this is, and the default is a PUSH.** A
-    // `Link` is a place somebody went and belongs in the history; rewriting a query as somebody
-    // types is not, and `useSearch` asks for a replace. Nothing said is a push, which is what every
-    // caller written before there were two meant.
-    go(to, opts = null)
-        if opts == null || opts.push != false then pushPath(to) else replacePath(to)
-
-        addressIs(to)
-        setPath(to)
-
-    moved(where)
-        addressIs(where)
-        setPath(where)
+    addressIs(here)
 
     // **Installed once and not on every render**, which is what the empty dependency list says. A
-    // second `navigateWith` would be harmless and a second `onNavigate` would not: `slate:dom` keeps
-    // one handler per registration, so a page re-rendering fifty times would hold fifty of them.
+    // second `onNavigate` would be a second handler for one movement: `slate:dom` keeps one handler
+    // per registration, so a page re-rendering fifty times would hold fifty of them.
+    //
+    // **What is registered is a CLEANUP as well**, a component that has gone being one this must
+    // stop asking to render -- `invalidate` refuses an instance that is gone, but the hook cell it
+    // closes over would be held for as long as the page runs.
     wire()
-        navigateWith(go)
-        onNavigate(moved)
+        val tell = () -> again(n -> n + 1)
 
-        null
+        push(watching, tell)
+        listening()
+
+        () -> forget(tell)
 
     useEffect(wire, [])
 
-    path
+    here
 
 // **`useSearch` is `usePath` underneath, on a page, and this is where the two are joined.** The
 // router module holds the query and knows nothing about a browser; this line hands it the hook that

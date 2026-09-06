@@ -195,6 +195,25 @@ App(props) = router(routes, usePath())
 mount(<App/>, domHost("#app"))
 ```
 
+**A page that means more by following a link says so with `navigateWith`, and what it says wins.**
+An application that fetches the record the next page renders from — or keeps the URL in state of its
+own — installs a navigator of its own:
+
+```
+import { navigateWith } from lath/router
+
+go(to, opts = null)
+    if opts == null || opts.push != false then pushPath(to) else replacePath(to)
+
+    setUrl(to)
+```
+
+**That outranks the one `usePath` installs, and having two slots rather than one is deliberate.**
+`useSearch` reads the address bar through `usePath`, so every control that wants a sort order or a
+page number registers the built-in navigator as a side effect of asking for the query. Into one slot,
+the last control to render would own the page's navigation, and a click would move the address bar and
+re-render that control while the application heard nothing at all.
+
 **No nested routes in this version.** A nested router is a component that renders a router, which
 needs nothing from here.
 
@@ -488,6 +507,11 @@ component. **`insertBefore` and `removeChild` on `slate:dom`** are what let the 
 reconciler's operations as operations: reordering three rows of a thousand was three correct
 decisions and one `replaceChildren` of a thousand nodes until 0.0.30, and is now six mutation records
 and nothing for the rows that stayed.
+
+**0.5.2 changes nothing about `Host` either.** What it changes is which navigator a `Link` calls:
+what a program installed with `navigateWith` now outranks the one `usePath` installs for a page that
+said nothing, and `usePath` reads the address bar on every render rather than keeping a copy of it —
+so a movement an application made itself is seen by every `useSearch` on the page.
 
 **0.5.1 changes nothing about `Host`**, and the one thing a host of your own may notice is that
 `text("")` is never called any more: an empty text child stands for no node, in every host, so a host

@@ -232,15 +232,42 @@ export val LinkMark = "data-lath-link"
 // most pages have one address bar.
 var navigate = null
 
+// What `lath/dom`'s `usePath` installs for a page that never said what following a link means.
+//
+// **IT IS A SECOND SLOT AND NOT THE SAME ONE, WHICH IS THE WHOLE OF WHAT KEEPS A PROGRAM'S OWN
+// ANSWER.** `useSearch` reads the address bar through `usePath`, so every component that asks for
+// the query -- a sort control, a tag list, a pager -- installs the built-in navigator as a side
+// effect of asking. Into one slot, the last of them to render wins: an application that had said
+// `navigateWith(go)` at the top of its tree has that `go` quietly replaced by a hook belonging to
+// some control three levels down, and a link then moves the address bar and re-renders *that
+// control* rather than the page. Two slots and a rule about which wins is what makes both true --
+// a page that asked gets what it asked for, and a page that did not still has working links.
+var builtIn = null
+
 // Tell every `Link` what to do instead of following.
 //
 // **The function is called `f(to, opts)`**, where `opts` of `{ push: false }` asks for the address
 // to be REWRITTEN rather than pushed. Nothing said is a push, which is what a link is and what every
 // caller written before there were two ways of moving meant.
+//
+// **What a program says here OUTRANKS the built-in one for as long as the program runs**, whichever
+// was installed last: an application that holds the address itself -- because following a link means
+// fetching a record, not only moving the view -- must not be overridden by a hook that only knows
+// how to move the view.
 export navigateWith(f) =
     navigate = f
 
     null
+
+// The same, for the arrangement `lath/dom` installs on its own. Nothing else should call it.
+export navigatesWith(f) =
+    builtIn = f
+
+    null
+
+// Whichever of the two a movement goes through, or `null` where neither is installed -- which is
+// every server, and a page that has imported neither a document nor a navigator of its own.
+mover() = navigate ?? builtIn
 
 // Whether a click is one the router may take, or one the browser must have.
 //
@@ -268,12 +295,14 @@ export Link(props: object) -> Element =
     val to = props.to
 
     followed(e)
-        if navigate == null || !plainClick(e) || !ourOwn(to) then return null
+        val move = mover()
+
+        if move == null || !plainClick(e) || !ourOwn(to) then return null
 
         e.prevent()
 
         // **A link PUSHES**, a place somebody went being exactly what the back button is for.
-        navigate(to, { push: true })
+        move(to, { push: true })
 
     var out = {}
 
@@ -366,12 +395,13 @@ export useSearch() -> array =
 
         val to = withSearch(url, next)
         val pushes = opts != null && opts.push == true
+        val move = mover()
 
-        if navigate == null
+        if move == null
             addressIs(to)
             setKept(to)
         else
-            navigate(to, { push: pushes })
+            move(to, { push: pushes })
 
         null
 
