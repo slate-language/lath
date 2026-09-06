@@ -1133,6 +1133,372 @@ export val Portal = "#portal"
 export createPortal(el, into) -> Element =
     { type: Portal, props: { into: into, children: [el] }, key: null }
 
+// -- atoms -------------------------------------------------------------------------------------
+
+// **An atom is a piece of state that is a VALUE rather than a place in the tree.** It is defined at
+// the top of a module, it is shared by every component that reads it, and it belongs to no component
+// at all -- so two views of one number are two `useAtom` calls and not a prop threaded through
+// everything in between.
+//
+//     val count = atom(0)
+//     val doubled = atom(get -> get(count) * 2)
+//
+//     Counter(props) =
+//         val [n, setN] = useAtom(count)
+//
+//         <button onClick={() -> setN(n + 1)}>{string(n)}</button>
+//
+//     Twice(props) = <p>{string(useAtomValue(doubled))}</p>
+//
+// **This is Jotai's shape, and the reason to follow it rather than invent one is `get`.** A derived
+// atom is a function of the atoms it reads, and it reads them by calling the `get` it was handed --
+// so what it depends on is whatever it actually asked for on the last computation, and nothing has to
+// be declared. A dependency list would be a second place to get wrong.
+//
+// **A CONTEXT AND AN ATOM LOOK ALIKE AND ARE THE OPPOSITE WAY ROUND.** A context's value moves
+// because a component ABOVE the consumer re-rendered, so the consumer is already being rendered by
+// its parent and `contextEpoch` exists only to carry that through a `memo`. An atom moves because
+// something OUTSIDE the tree wrote it -- a handler, a timer, a socket -- and nothing above the
+// component is rendering at all. **So the subscription here is not an optimisation over a counter;
+// it is the only thing that makes an atom reach a component**, and it is per atom for the second
+// half of the same reason: one counter would re-render every component that reads any atom, and
+// what an atom promises is that a component renders when what IT read changed and not otherwise.
+
+// What every atom is, and what tells one from anything else that happens to be an object.
+//
+// **`id` IS WHAT MAKES TWO ATOMS TWO**, and it is here for the reason a string host's node carries
+// one: slate compares objects structurally, so `atom(0)` and `atom(0)` would be one value and a
+// store keyed by the atom would hold one cell for both. The counter is the whole of the fix.
+//
+// **`read` and `write` are `any` rather than `function`** because a primitive atom has neither, and
+// `null` is what says so.
+export type Atom = { id: integer, init: any, read: any, write: any }
+
+var atomIds = 0
+
+// A primitive atom, or one derived from others.
+//
+//     val count = atom(0)                                   a value
+//     val doubled = atom(get -> get(count) * 2)             read-only, from whatever it reads
+//     val doubled = atom(get -> get(count) * 2,             and writable, in its own terms
+//         (get, set, v) -> set(count, v / 2))
+//
+// **A FUNCTION AS THE FIRST ARGUMENT MEANS DERIVED**, which is Jotai's rule and carries Jotai's one
+// ambiguity: an atom whose value is itself a function cannot be spelled this way. Hold it in a
+// record -- `atom({ fn: f })` -- which is what a program wanting one should write anyway, a bare
+// function being a value nothing can print or compare usefully.
+//
+// **`write` is `(get, set, arg)` and may set anything**, not only what its own `read` reads: a
+// derived atom is where a form's "set both of these" lives, and it is the reason a derived atom is
+// worth writing to at all.
+export atom(initial, write = null) -> Atom =
+    if write != null && !(write is function)
+        throw "an atom's write is a function of (get, set, value), and this is " + string(write)
+
+    // The error path that is actually easy to hit: a value and a writer, which cannot mean anything
+    // -- a primitive atom is written by being set.
+    if write != null && !(initial is function)
+        throw "atom's second argument is how a DERIVED atom is written, and the first argument here is a value rather than a read function"
+
+    atomIds = atomIds + 1
+
+    val derived = initial is function
+    val read = if derived then initial else null
+    val init = if derived then null else initial
+
+    { id: atomIds, init: init, read: read, write: write }
+
+// Where the atoms' values actually live, and what a subtree may be given one of.
+//
+// **`get`, `set` and `sub`, and the third is why a store is an object rather than a table.** A
+// component subscribes to the atoms it read, and the thing it subscribes to has to be the same
+// thing a handler writes.
+export type Store = { id: integer, get: function, set: function, sub: function }
+
+var storeIds = 0
+var subIds = 0
+
+// An array with one value taken out of it, compared with slate's `==`.
+withoutValue(xs: array, v) -> array =
+    var out = []
+
+    for x in xs
+        if x != v then push(out, x)
+
+    out
+
+// A fresh set of values for every atom there is, and every atom there will be.
+//
+// **THE REASON A STORE EXISTS IS THE SERVER.** Atoms are module-level values, so on a page there is
+// one of everything and a single default store is exactly right. A server rendering two requests at
+// once has one of everything too -- and two requests sharing a `count` is one user's page showing
+// another user's number. A store is what makes a render's state its own: a fresh one per request,
+// handed to the tree with `<Provider store={...}>`, and `html(root)` of two of them is two answers.
+//
+// **A store is not a cache of what the atoms hold; it IS what they hold.** An atom carries its
+// initial value and its read function and nothing else, which is what lets one atom stand in as many
+// stores as a program cares to make.
+export createStore() -> Store =
+    storeIds = storeIds + 1
+
+    val id = storeIds
+
+    // What each atom holds here, keyed by the atom's id -- an integer, so this is an ordinary object
+    // used as a table, the way `domHost` keys what it has written by a node's handle.
+    val cells = {}
+
+    // The derived reads that are running, innermost last, and what each of them has asked for so
+    // far. **A stack and not one frame**, a derived atom being free to read another one.
+    var frames = []
+
+    // What this store holds for an atom, made the first time it is asked for.
+    //
+    // **A derived atom's cell starts INVALID and a primitive one starts valid**, holding the value
+    // the atom was defined with -- which is the whole of what "an atom's initial value" means.
+    cellOf(a: Atom) -> object =
+        val key = string(a.id)
+        val had = cells[key] ?? null
+
+        if had != null then return had
+
+        // **`?? null` and not a bare comparison**: a key nobody has written reads `undefined`, which
+        // is not `null` to slate.
+        val fresh = { value: a.init, valid: a.read == null, subs: [], deps: [], on: [] }
+
+        cells[key] = fresh
+
+        fresh
+
+    // A derived atom's dependencies, re-registered against what it read THIS time.
+    //
+    // **A dependency that was not read again is dropped**, which is what makes a read with a
+    // condition in it honest: `get(showAll) then get(everything) else get(mine)` depends on the
+    // branch it took, and being told about the other one would re-render for a change nobody can see.
+    depend(a: Atom, cell: object, now: array) =
+        for was in cell.deps
+            if now.indexOf(was) == null
+                val gone = cellOf(was)
+
+                gone.on = withoutValue(gone.on, a)
+
+        for dep in now
+            val up = cellOf(dep)
+
+            if up.on.indexOf(a) == null then push(up.on, a)
+
+        cell.deps = now
+
+        null
+
+    // What an atom holds here, computing a derived one where its value is not current.
+    //
+    // **This is also the `get` a derived atom's `read` is handed**, which is what makes a dependency
+    // something the read declares by asking rather than by listing.
+    get(a) =
+        if !(a is Atom)
+            throw "an atom is what atom(...) answers, and this is " + string(a)
+
+        val cell = cellOf(a)
+
+        // **Recorded BEFORE the value is worked out**, so that a read reading a read registers the
+        // dependency against the frame that was already there rather than against its own.
+        if frames.len() > 0
+            val frame = frames[frames.len() - 1]
+
+            if frame.deps.indexOf(a) == null then push(frame.deps, a)
+
+        if !cell.valid
+            push(frames, { deps: [] })
+
+            cell.value = a.read(get)
+            cell.valid = true
+
+            val mine = frames[frames.len() - 1]
+
+            frames = frames[0..<frames.len() - 1]
+
+            depend(a, cell, mine.deps)
+
+        cell.value
+
+    // An atom that moved, told to everything that reads it.
+    //
+    // **A derived atom is recomputed and only announced where its value actually CHANGED**, which is
+    // what stops `atom(get -> get(count) > 0)` from re-rendering a component every time a counter
+    // that stays positive goes up. It is `useState`'s rule -- setting state to what it already holds
+    // renders nothing -- read one layer out.
+    changed(a: Atom) =
+        val cell = cellOf(a)
+
+        // **A copy, because a subscriber is free to unsubscribe.** A component that unmounts while
+        // being told would otherwise take the next one out of the walk with it.
+        for e in cell.subs.slice(0)
+            e.fn()
+
+        for down in cell.on.slice(0)
+            val below = cellOf(down)
+            val was = below.value
+
+            below.valid = false
+
+            if get(down) != was then changed(down)
+
+        null
+
+    // An atom written.
+    //
+    // **The value may be a function of the old one**, which is `useState`'s setter and is here for
+    // the same reason: two writes in one handler have to be able to build on each other. It carries
+    // the same ambiguity `atom` does about an atom whose value is a function, and the same answer.
+    set(a, v) =
+        if !(a is Atom)
+            throw "an atom is what atom(...) answers, and this is " + string(a)
+
+        if a.read == null
+            val cell = cellOf(a)
+            val next = if v is function then v(cell.value) else v
+
+            if next == cell.value then return null
+
+            cell.value = next
+
+            changed(a)
+
+            return null
+
+        // The error path worth a sentence: a derived atom with no write is a view of other atoms,
+        // and writing one would have to guess which of them the writer meant.
+        if a.write == null
+            throw "this atom is derived from other atoms and has no write, so it cannot be set -- give atom(read, write) the second argument that says what setting it means"
+
+        a.write(get, set, v)
+
+        null
+
+    // One subscription taken back, found by the number it was given.
+    unsub(cell: object, which: integer) =
+        var out = []
+
+        for e in cell.subs
+            if e.id != which then push(out, e)
+
+        cell.subs = out
+
+        null
+
+    // Told whenever this atom's value changes here, until the answer is called.
+    //
+    // **A derived atom is computed on the spot**, which is not tidiness: until it has run once it
+    // has no dependencies registered, so nothing would ever tell it that one of them moved.
+    sub(a, f: function) -> function =
+        if !(a is Atom)
+            throw "an atom is what atom(...) answers, and this is " + string(a)
+
+        get(a)
+
+        val cell = cellOf(a)
+
+        subIds = subIds + 1
+
+        val mine = subIds
+
+        push(cell.subs, { id: mine, fn: f })
+
+        () -> unsub(cell, mine)
+
+    { id: id, get: get, set: set, sub: sub }
+
+// The store a program that never mentioned one is using.
+//
+// **A function and not a `val`**, so that nothing is built while this module is being loaded: a
+// program that renders on a server and makes a store per request never touches this one at all.
+var sharedStore = null
+
+export defaultStore() -> Store =
+    if sharedStore == null then sharedStore = createStore()
+
+    sharedStore
+
+// The store a subtree reads its atoms from.
+//
+//     <Provider store={createStore()}><App/></Provider>
+//
+// **This is what a server puts around a request's render**, and it is the whole of the isolation:
+// two renders under two stores are two sets of values for one set of atoms.
+//
+// **It is an ordinary component and is found the way `useContext` finds a provider** -- by walking up
+// from the instance being rendered and comparing element types. There is no separate mechanism here.
+export Provider(props: object) = props.children
+
+// The store this render is under, which is the default one where nothing provided another.
+//
+// **It keeps no hook slot**, so it may be called inside a condition -- `useContext`'s arrangement for
+// `useContext`'s reason. Called outside a render it answers the default store, which is what lets a
+// server or a handler write an atom without pretending to be a component.
+export useStore() -> Store =
+    var at = rendering
+
+    while at != null
+        if at.kind == "component" && at.el.type == Provider then return at.el.props.store
+
+        at = at.parent
+
+    defaultStore()
+
+// An atom's value, and this component re-rendered whenever it changes.
+//
+// **THE SUBSCRIPTION IS THE HOOK'S SLOT AND `cleanup` IS THE FIELD IT KEEPS IT IN**, which is not a
+// coincidence: `unmount` walks a gone instance's hooks and calls every `cleanup` it finds, so a
+// component that leaves the tree stops being told about its atoms with no code here at all. It is
+// the same field `useEffect` uses and the same walk.
+//
+// **Re-subscribed only where the atom or the store CHANGED**, compared by their ids rather than by
+// the values -- a store holds every cell in it, and comparing two of those structurally on every
+// render is a walk of the whole application's state.
+export useAtomValue(a) =
+    if !(a is Atom)
+        throw "useAtomValue is given an atom, and this is " + string(a)
+
+    if rendering == null
+        throw "useAtomValue is called while a component renders, and nothing is rendering"
+
+    val store = useStore()
+    val inst = rendering
+    val cell = hookCell({ atom: null, store: null, cleanup: null })
+
+    if cell.atom != a.id || cell.store != store.id
+        if cell.cleanup is function then cell.cleanup()
+
+        cell.atom = a.id
+        cell.store = store.id
+        cell.cleanup = store.sub(a, () -> invalidate(inst))
+
+    store.get(a)
+
+// How to write an atom, without reading it.
+//
+// **It does NOT subscribe**, which is the point of having it: a button that only ever increments a
+// counter has no reason to render when the counter moves, and `useAtom` there would render it on
+// every change for a value it does not show.
+//
+// **It keeps no hook slot either**, so it may be called inside a condition.
+export useSetAtom(a) -> function =
+    if !(a is Atom)
+        throw "useSetAtom is given an atom, and this is " + string(a)
+
+    val store = useStore()
+
+    (v) -> store.set(a, v)
+
+// An atom's value and its setter, which is `useState`'s pair over state that is not this
+// component's.
+//
+//     val [count, setCount] = useAtom(counter)
+//
+// **A slot is kept, because `useAtomValue` keeps one** -- so this may not be called inside a
+// condition, exactly as `useState` may not.
+export useAtom(a) -> array = [useAtomValue(a), useSetAtom(a)]
+
 // -- the string host -------------------------------------------------------------------------
 
 // **Ten functions, and nothing above them knows what a node is.** A DOM host answers the same ten
