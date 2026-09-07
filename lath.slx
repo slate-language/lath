@@ -68,6 +68,22 @@ export type Host = { element: function, text: function, setProps: function, setT
 export createElement(type, props: object, kids: array) -> Element =
     { type: type, props: props with { children: kids }, key: props.key ?? null }
 
+// A copy of `element`, changing only what the caller named.
+//
+// **React's `cloneElement`, cut to what an element here actually needs.** `type` travels unchanged;
+// the new props are the original's with the given ones written over them -- `key` included, so a
+// `key` in `props` replaces the original's and a `props` of `null` changes nothing. The children are
+// the given ones where any were given and the original's otherwise. `element` is read and never
+// written to.
+export cloneElement(element, props = null, ...kids) -> Element =
+    if !(element is Element)
+        throw "cloneElement's first argument is an element, and this is " + string(element)
+
+    val merged = if props == null then element.props else { ...element.props, ...props }
+    val children = if kids.length > 0 then kids else element.props.children
+
+    { type: element.type, props: merged with { children: children }, key: merged.key ?? null }
+
 // -- the render in progress ------------------------------------------------------------------
 
 // The instance being rendered, and which of its hooks the component is up to.

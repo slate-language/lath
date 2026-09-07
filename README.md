@@ -46,6 +46,7 @@ the line that is wrong is the one in your own program.
 | | |
 |---|---|
 | `createElement`, `Fragment` | what slx desugars into |
+| `cloneElement(element, props, ...kids)` | a copy of `element` with `props` written over its own and, where any were given, `kids` in place of its children |
 | `useState`, `useReducer`, `useRef`, `useMemo`, `useCallback`, `useEffect` | hooks |
 | `createContext(default)`, `useContext(ctx)` | a value handed to a whole subtree |
 | `memo(Component, areEqual)` | a component that is not rendered again while its props are the same |

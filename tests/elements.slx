@@ -1,4 +1,5 @@
-import { createElement, Fragment, mount, html, flush, useState, useEffect, useMemo, useRef } from "../lath.slx"
+import { createElement, cloneElement, Fragment, mount, html, flush, useState, useEffect, useMemo,
+    useRef } from "../lath.slx"
 
 @test
 an_element_renders_to_markup()
@@ -153,3 +154,66 @@ A_TREE_THAT_IS_NOTHING_BUT_AN_EMPTY_TEXT_CHILD_IS_NO_NODES_AT_ALL()
     // no host node above it: the root's own list is what the host is handed, and an empty text child
     // contributes nothing to it.
     assert(html(mount(<>{""}</>)) == "")
+
+@test
+cloneElement_keeps_the_type_and_merges_props_with_the_given_ones_winning()
+    val original = <div class="a" id="x">hi</div>
+    val clone = cloneElement(original, { class: "b" })
+
+    assert(clone.type == original.type)
+    assert(clone.props.class == "b")
+    assert(clone.props.id == "x")
+
+@test
+A_KEY_IN_THE_GIVEN_PROPS_OVERRIDES_THE_ORIGINALS_AND_IS_KEPT_WHERE_NONE_IS_GIVEN()
+    val original = <div key="a"/>
+
+    assert(cloneElement(original, { key: "b" }).key == "b")
+    assert(cloneElement(original, { class: "x" }).key == "a")
+    assert(original.key == "a")
+
+@test
+KIDS_GIVEN_REPLACE_THE_CHILDREN_AND_NONE_GIVEN_KEEPS_THEM()
+    val original = <p>original</p>
+
+    val replaced = cloneElement(original, null, "new")
+    val kept = cloneElement(original, { class: "x" })
+
+    assert(replaced.props.children == ["new"])
+    assert(kept.props.children == original.props.children)
+
+@test
+A_null_PROPS_ARGUMENT_CHANGES_NOTHING()
+    val original = <div class="a" key="k"/>
+    val clone = cloneElement(original)
+
+    assert(clone.type == original.type)
+    assert(clone.props == original.props)
+    assert(clone.key == original.key)
+
+@test
+THE_ORIGINAL_ELEMENT_IS_NEVER_WRITTEN_TO()
+    val original = <div class="a">hi</div>
+
+    cloneElement(original, { class: "b" }, "bye")
+
+    assert(original.props.class == "a")
+    assert(original.props.children == ["hi"])
+
+@test
+a_cloned_element_renders_through_the_reconciler_to_the_expected_markup()
+    val original = <div class="a"><b>hi</b></div>
+    val clone = cloneElement(original, { class: "b" }, <i>bye</i>)
+
+    assert(html(mount(clone)) == "<div class=\"b\"><i>bye</i></div>")
+
+@test
+CLONING_SOMETHING_THAT_IS_NOT_AN_ELEMENT_IS_REFUSED_NAMING_WHAT_WAS_GIVEN()
+    var said = ""
+
+    try
+        cloneElement(42)
+    catch e
+        said = e.message
+
+    assert(said == "cloneElement's first argument is an element, and this is 42")
