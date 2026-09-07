@@ -1,6 +1,6 @@
 import { createElement, Fragment, mount, flush, useState } from "../lath.slx"
 import { domHost } from "../dom.slx"
-import { byId, query, markup, setProperty } from slate:dom
+import { byId, query, markup, setProperty } from dom
 import { at, mutations, touched, focus, active } from "./probe.slx"
 
 // A long list reordered, watched by the browser rather than by the framework.

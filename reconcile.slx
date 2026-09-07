@@ -25,8 +25,8 @@
 //
 // **The host is handed the whole change at once and decides how to apply it**, which is what the
 // adapter's ninth function is. A host that can move one child walks the list; a host that can only
-// replace a whole child list -- which is every host built on `slate:dom` today, that module having
-// no `insertBefore` -- applies the operations to a list it keeps and writes it once. Telling a host
+// replace a whole child list -- which is what a host with no `insertBefore` is left with -- applies
+// the operations to a list it keeps and writes it once. Telling a host
 // one operation at a time would make the second kind quadratic: a thousand rows filled one at a
 // time is a thousand whole-list writes.
 //

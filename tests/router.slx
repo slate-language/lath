@@ -134,7 +134,7 @@ A_LINK_PASSES_EVERY_OTHER_PROP_THROUGH_AND_KEEPS_to_OUT_OF_THE_MARKUP()
 
 // -- what a Link does with a click ----------------------------------------------------------------
 
-// An event record of the shape `slate:dom` builds, with the two fields a router needs.
+// An event record of the shape a DOM host builds, with the two fields a router needs.
 //
 // **`mods` and `button` were added to `slate:dom` for this**, and without them every test below
 // would be the same test: a cmd-click and a plain click were indistinguishable.

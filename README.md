@@ -70,9 +70,9 @@ the line that is wrong is the one in your own program.
 
 `lath` is the framework, `lath/dom` is the browser host and `lath/router` is the router.
 
-**Most programs must not have `lath/dom`.** It imports `slate:dom`, which works in a browser and
-faults everywhere else — so a page rendered to markup beside `slate:http`, or a component tested
-under the interpreter, has no business loading it.
+**Most programs must not have `lath/dom`.** It imports the [`dom`](https://github.com/slate-language/dom)
+package, whose every command wants a page and faults where there is none — so a page rendered to
+markup beside `slate:http`, or a component tested under the interpreter, has no business loading it.
 
 **`lath/router` is separate for its own reason: so that a server can import it.** It is handed a path
 and never reads one, so nothing in it needs a browser — which is what lets the same routes and the
@@ -213,7 +213,7 @@ go(to, opts = null)
 ```
 
 **A page that does this listens for the back button itself**, with `onNavigate` — and `usePath` then
-leaves that handler alone, `slate:dom` keeping exactly one of them for the whole program.
+leaves that handler alone, `dom` keeping exactly one of them for the whole program.
 
 **That outranks the one `usePath` installs, and having two slots rather than one is deliberate.**
 `useSearch` reads the address bar through `usePath`, so every control that wants a sort order or a
@@ -414,7 +414,7 @@ component did not ask for.
 **Two text children in a row are one text child.** `<h2>{n} replies</h2>` writes `<h2>2 replies</h2>`
 and a parser reads one text node back, so lath joins the run before it makes an instance. React
 writes a `<!-- -->` between them and reads it back as the seam; that answer would put markup nobody
-asked for in every server render, and `slate:dom` cannot tell a comment from a text node anyway.
+asked for in every server render, and a DOM host cannot tell a comment from a text node anyway.
 
 **An empty text child is no node at all.** `<p>{""}</p>` writes `<p></p>` — there is nothing for an
 empty string to write — so the tree holds nothing for it either, and the node arrives the moment the
@@ -438,7 +438,7 @@ the general lesson: an adapter with one implementation is a guess. It shipped wi
 
 **`adopt(parent, index)` is the newest**, and it is what hydration is: *give me the child that is
 there*. It answers `{ node, tag, text }` rather than a bare node, because `lath.slx` may not import
-`slate:dom` — the host is the only thing that knows what a node is, and asking a node its tag has to
+`dom` — the host is the only thing that knows what a node is, and asking a node its tag has to
 be its question. `parent` of `null` means the host's own container, which is the one place the
 framework has no node to name. **A string host's `adopt` faults**, a server being what renders the
 markup a page adopts.
@@ -470,7 +470,7 @@ contract with two implementations gets checked without a document in the room.
 ## What a handler is given
 
 **A record, not the event.** `MouseEvent` has no representation in slate and inventing one would mean
-inventing a foreign value, so `slate:dom` builds an object at the moment the handler fires:
+inventing a foreign value, so `dom` builds an object at the moment the handler fires:
 
 | | |
 |---|---|
@@ -534,7 +534,7 @@ would run their own.
 
 **`tests-dom/` is a separate directory because `slate test tests` walks everything below `tests/`**,
 and every file there calls `domHost`, which faults under the interpreter — so it would fail the suite
-with the very refusal that proves `slate:dom` is working. `tests-dom/setup.mjs` builds a
+with the very refusal that proves the DOM host is working. `tests-dom/setup.mjs` builds a
 [jsdom](https://github.com/jsdom/jsdom) page and installs it before the program runs, which is what
 `--import` is for.
 
@@ -545,6 +545,11 @@ tested against somebody else's reading of the specification rather than against 
 written beside it.
 
 ## Requirements
+
+The [`dom`](https://github.com/slate-language/dom) package **0.1.0** or newer, and slate **0.0.39**
+or newer, since `lath/dom` moved off the compiler's own `slate:dom`. The two floors are one fact: a
+node is the element itself rather than a handle into a table, and an external hashes by the element
+it holds as of 0.0.39 — which is what lets this host key what it remembers about a node by the node.
 
 slate **0.0.37** or newer as of lath 0.7.1, and the floor moved because `slate:dom` grew `focus`, `blur` and
 `activeElement`: the DOM test harness used to fake the caret with a property setter on
@@ -563,7 +568,7 @@ reconciler's operations as operations: reordering three rows of a thousand was t
 decisions and one `replaceChildren` of a thousand nodes until 0.0.30, and is now six mutation records
 and nothing for the rows that stayed.
 
-**0.5.3 is the back button, which is the same fact one layer down.** `slate:dom`'s `onNavigate` keeps
+**0.5.3 is the back button, which is the same fact one layer down.** `onNavigate` keeps
 ONE handler for the whole program and the last registration wins, so `usePath` listening on behalf of
 a control that asked for the query took the back button off a page that had installed a listener of
 its own. It does not listen at all now where a page installed a navigator with `navigateWith` — that

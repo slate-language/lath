@@ -5,15 +5,16 @@
 // neither knows about the other. This file is the second implementation, which is what turns that
 // claim from a hope into a fact.
 //
-// **A node here is an INTEGER**, `slate:dom` handing out a handle into a table it keeps rather than
-// a foreign value slate could not print, compare or store. So everything below is arithmetic and
-// strings, which is what makes it ordinary slate.
+// **A node here is the element itself**, an `external` the page hands over: opaque, printable,
+// compared by identity and usable as a key. So a table of what this host has done to a node is a
+// `Map` from the node, there is no handle to give back, and nothing below is arithmetic on a number
+// that stood in for an element.
 
 import { createElement, createText, setAttribute, removeAttribute, setProperty, on, off,
-    setChildren, setText, byId, query, markup, release } from slate:dom
-import { insertBefore, removeChild } from slate:dom
-import { children, tagName, nodeText, attribute } from slate:dom
-import { location, pushPath, replacePath, onNavigate } from slate:dom
+    setChildren, setText, byId, query, markup } from dom
+import { insertBefore, removeChild } from dom
+import { children, tagName, nodeText, attribute } from dom
+import { location, pushPath, replacePath, onNavigate } from dom
 import { Host, useState, useEffect } from "./lath.slx"
 import { navigatesWith, addressIs, addressWith, ownsNavigation } from "./router.slx"
 
@@ -36,23 +37,20 @@ export domHost(into: string) -> Host =
     if el == null
         throw "there is no element matching " + into + " on this page"
 
-    // What was last set on each node, keyed by its handle -- a number, so this is an ordinary
-    // object used as a table. Two tables rather than one: an attribute is taken back by name and a
-    // handler has to be taken back by the very function that was installed.
-    val attrs = {}
-    val hands = {}
+    // What was last set on each node, keyed by the NODE -- an external hashes by the element it
+    // holds, so two reads of one element find each other's entry and a `Map` is the table. Two
+    // tables rather than one: an attribute is taken back by name and a handler has to be taken back
+    // by the very function that was installed.
+    val attrs = Map()
+    val hands = Map()
 
-    // What each parent holds, keyed by its handle, in order.
+    // What each parent holds, keyed by the parent, in order.
     //
-    // **A cache and not a question asked of the page, because a handle cannot be asked twice.**
-    // `children(node)` mints a FRESH handle for every child it answers, so a second call for the same
-    // element gives a different number -- and the framework holds the first. There is no way to ask
-    // "is this node already in that parent" without remembering, so this remembers.
-    //
-    // **It is what `patch` moves a node RELATIVE to as well.** `insertBefore` needs the child that
-    // is to follow, and the reconciler names it by handle; keeping the order here is how this host
-    // knows a node is already where it is being asked to go.
-    val kids = {}
+    // **A cache and not a question asked of the page**, because the order is what `patch` moves a
+    // node relative to: `insertBefore` needs the child that is to follow, and keeping the order here
+    // is how this host knows a node is already where it is being asked to go. Asking the page for a
+    // parent's children on every operation would be a walk of the whole child list per node moved.
+    val kids = Map()
 
     // Where a stylesheet goes. **The head, and the container only where a page somehow has none** —
     // a `<style>` in the body works and is not where anybody looks for one.
@@ -80,18 +78,15 @@ export domHost(into: string) -> Host =
     // **A re-render sets what is there now and takes back what is not**, which is the half a host
     // that only ever set things would get wrong: a `disabled` that goes away has to be removed, and
     // a handler replaced by a new closure has to be detached or the old one fires too.
-    setProps(node: integer, props: object) =
-        val key = string(node)
-
+    setProps(node: external, props: object) =
         // **Whether this host has ever written to this node**, which is the one thing that tells a
         // node adopted from the page apart from one this host created. It is what `value` and
         // `checked` are compared on the strength of below.
         //
-        // **`?? null` and not a bare comparison**: a field that was never there reads `undefined`,
-        // which is not `null` to slate, and a node this host has dropped reads the `null` that
-        // `drop` wrote. The two mean the same thing here and `??` is what makes them one answer.
-        val first = (attrs[key] ?? null) == null
-        val had = attrs[key] ?? []
+        // **`?? null` and not a bare comparison**: a key a `Map` has never been given reads
+        // `undefined`, which is not `null` to slate, and `??` is what makes the two one answer.
+        val first = (attrs.get(node) ?? null) == null
+        val had = attrs.get(node) ?? []
         var now = []
 
         for [name, value] in entries(props)
@@ -129,20 +124,19 @@ export domHost(into: string) -> Host =
         for name in had
             if !now.contains(name) then removeAttribute(node, name)
 
-        attrs[key] = now
+        attrs.set(node, now)
 
         null
 
     // The children of one parent, as this host last left them.
-    held(node: integer) -> array =
-        val key = string(node)
-        val list = kids[key] ?? null
+    held(node: external) -> array =
+        val list = kids.get(node) ?? null
 
         if list != null then return list
 
         val fresh = []
 
-        kids[key] = fresh
+        kids.set(node, fresh)
 
         fresh
 
@@ -164,7 +158,7 @@ export domHost(into: string) -> Host =
     // **A node the parent already holds is MOVED and not copied**, which is `insertBefore`'s own
     // rule and is what a keyed reorder is: the row keeps its identity, whatever was typed into it,
     // and whatever it was playing.
-    patch(parent: integer, ops: array) =
+    patch(parent: external, ops: array) =
         val list = held(parent)
 
         for op in ops
@@ -238,8 +232,8 @@ export domHost(into: string) -> Host =
 
         found
 
-    // What the head already holds, as text. **The handles are given back**, `children` minting a
-    // fresh one per child per call and this being a walk of markup nobody rendered.
+    // What the head already holds, as text. **Nothing is kept**, this being a walk of markup nobody
+    // rendered: the elements are read for their text and let go of.
     sheetsInHead() -> array =
         var found = []
 
@@ -247,11 +241,9 @@ export domHost(into: string) -> Host =
             if tagName(kid) == "style" && attribute(kid, "data-lath-style") != null
                 push(found, nodeText(kid))
 
-            release(kid)
-
         found
 
-    setNodeText(node: integer, s: string) =
+    setNodeText(node: external, s: string) =
         if nodeText(node) != s then setText(node, s)
 
         null
@@ -266,19 +258,19 @@ export domHost(into: string) -> Host =
 
         out
 
-    // A node the framework has dropped. Giving the handle back is what stops the table growing as
-    // long as everything the interface has ever rendered.
-    drop(node: integer) =
-        val key = string(node)
+    // A node the framework has dropped. **Forgetting it is what stops these tables growing as long
+    // as everything the interface has ever rendered** -- and it is what lets the browser collect the
+    // element, a `Map` keyed by a node holding that node for as long as the entry stands.
+    drop(node: external) =
+        // **The handlers come off the node, and that is not tidiness.** The listener table this
+        // host's `on` writes into is an ordinary `Map` keyed by the node, so a node left with a
+        // handler on it is held by that table for the life of the page -- the whole tree a route
+        // change threw away, still in memory because something was once clickable.
+        unlisten(hands, node)
 
-        // **`null` and not `undefined`**: slate refuses `undefined` in an object, which is the same
-        // rule that refuses it in an array and for the same reason -- a hole that travels. `??`
-        // above reads either as "nothing was here".
-        attrs[key] = null
-        hands[key] = null
-        kids[key] = null
-
-        release(node)
+        attrs.delete(node)
+        hands.delete(node)
+        kids.delete(node)
 
         null
 
@@ -296,7 +288,7 @@ export domHost(into: string) -> Host =
         for node in nodes
             push(all, node)
 
-        kids[string(el)] = all.slice(0)
+        kids.set(el, all.slice(0))
 
         setChildren(el, all)
 
@@ -307,16 +299,15 @@ export domHost(into: string) -> Host =
     // **`parent` of `null` is this host's own container**, which is the one place the framework has
     // no node to name -- the nodes at the very top of the tree have no host node above them.
     //
-    // **It answers a RECORD and not a bare node.** `lath.slx` may not import `slate:dom`, so it
+    // **It answers a RECORD and not a bare node.** `lath.slx` may not import the `dom` package, so it
     // cannot ask a node its tag or its text; the host is the only thing that knows what a node is,
     // and handing back `{ node, tag, text }` is what keeps it that way. `tag` is `null` for a text
     // node, which is how the framework tells the two apart.
-    // **The list is read ONCE per parent and kept**, which is two things at once. `children` mints a
-    // fresh handle for every child it answers, so calling it per index would hand out one handle per
-    // child per child -- a page's whole markup squared -- and the framework would hold a different
-    // number for a node it had already adopted. Keeping the first answer makes the handles stable,
-    // and it leaves this host knowing what every parent holds before a single render has happened,
-    // which is exactly what `insert` and `remove` need after a hydrating render.
+    //
+    // **The list is read ONCE per parent and kept**, which is a walk of a child list per parent
+    // rather than one per child adopted. It also leaves this host knowing what every parent holds
+    // before a single render has happened, which is exactly what `insert` and `remove` need after a
+    // hydrating render.
     adopt(parent, index: integer) =
         val into = parent ?? el
         val list = held(into)
@@ -345,23 +336,45 @@ export domHost(into: string) -> Host =
 // **The previous one is detached first**, and that is not tidiness. A component's handler is a fresh
 // closure on every render, so a host that only ever added would leave one listener per render on the
 // node and a single click would run every version of the handler the component had ever had.
-listen(hands: object, node: integer, name: string, f) =
-    val key = string(node) + " " + name
+// **The table is a `Map` from the node to what is installed on it**, by the React name -- one entry
+// per node rather than one per node and event, which is what makes `unlisten` below possible at all:
+// a table keyed by a string built out of both could not answer "what is on this node".
+listen(hands, node: external, name: string, f) =
+    val installed = hands.get(node) ?? {}
     val kind = name[2..].lower()
-    val had = hands[key] ?? null
+    val had = installed[name] ?? null
 
     if had == f then return null
 
     if had != null then off(node, kind, had)
 
     if f == null
-        hands[key] = null
+        installed[name] = null
+
+        hands.set(node, installed)
 
         return null
 
     on(node, kind, f)
 
-    hands[key] = f
+    installed[name] = f
+
+    hands.set(node, installed)
+
+    null
+
+// Every handler this host installed on a node, taken off it.
+//
+// **A listener is what holds a node**, the module keeping its listeners in an ordinary `Map` and not
+// a `WeakMap`, so a torn-down node that is never told about its handlers is a node the page cannot
+// collect. `off` is what gives it up, and `drop` is where every host node ends.
+unlisten(hands, node: external) =
+    val installed = hands.get(node) ?? null
+
+    if installed == null then return null
+
+    for [name, f] in entries(installed)
+        if f != null then off(node, name[2..].lower(), f)
 
     null
 
@@ -428,7 +441,7 @@ moving(to, opts = null) =
 // What this file installs for itself, and the one thing it must not install over a page.
 //
 // **`onNavigate` KEEPS ONE HANDLER FOR THE WHOLE PROGRAM AND THE LAST REGISTRATION WINS.** It is not
-// a list `slate:dom` adds to -- `popped = f` is the whole of it -- so a hook that listened would take
+// a list the `dom` package adds to -- `popped = f` is the whole of it -- so a hook that listened would take
 // the back button from a page that had already said what a movement means, and that page would then
 // hear nothing at all: the address would move, the view would stay, and the only thing that had
 // happened is that a control somewhere below asked for the query. A page that owns navigation owns

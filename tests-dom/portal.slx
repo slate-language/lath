@@ -1,7 +1,7 @@
 import { createElement, Fragment, mount, flush, useState, useMemo, createPortal, createContext,
     useContext } from "../lath.slx"
 import { domHost } from "../dom.slx"
-import { byId, markup } from slate:dom
+import { byId, markup } from dom
 import { beside, click, says } from "./probe.slx"
 
 // Portals and context, in a page rather than against a string.

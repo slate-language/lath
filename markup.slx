@@ -33,7 +33,7 @@ export hostElement(tag: string) -> object = { id: nextId(), tag: tag, props: {},
 // What changed about a parent's children, applied in order.
 //
 // **A string host can move one child, so it walks the list** -- which is the half of the contract the
-// DOM host cannot demonstrate, `slate:dom` having no `insertBefore`.
+// DOM host cannot demonstrate, a host with no `insertBefore` having nothing to walk with.
 export hostPatch(parent: object, ops: array) =
     for op in ops
         if op.kind == "remove" then hostTake(parent, op.node) else hostPut(parent, op.node, op.before)

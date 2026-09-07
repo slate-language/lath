@@ -1,7 +1,7 @@
 import { createElement, Fragment, mount, hydrate, html, flush, stringHost, useState,
     Boundary } from "../lath.slx"
 import { domHost } from "../dom.slx"
-import { attribute, byId } from slate:dom
+import { attribute, byId } from dom
 import { at, click, says, shown, mutations } from "./probe.slx"
 
 // Hydration against a real document, measured by a `MutationObserver`.

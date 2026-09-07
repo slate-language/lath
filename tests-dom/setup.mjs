@@ -165,9 +165,15 @@ Object.defineProperty(w.Element.prototype, "lathEvent", {
     }
 })
 
-// The names slate's runtime looks for, and the classes a page has. **`addEventListener` has to be
-// the WINDOW's**: node's global is an `EventTarget` of its own, so leaving it alone would register
-// `popstate` on something the page never raises one on.
+// The names the `dom` package reads off `globalThis`, and the classes a page has.
+// **`addEventListener` has to be the WINDOW's**: node's global is an `EventTarget` of its own, so
+// leaving it alone would register `popstate` on something the page never raises one on.
+//
+// **`AbortController` is installed from the WINDOW too, and for the same kind of reason.** It is how
+// `off` takes a listener back -- `addEventListener(kind, f, { signal })` and `abort()` -- and a
+// signal built in node's realm handed to an element in jsdom's is a foreign object to the interface
+// that checks it: *parameter 3 dictionary has member 'signal' that is not of type 'AbortSignal'*.
+// A page has one realm and never meets this; a harness has two.
 const install = (name, value) => {
     try {
         Object.defineProperty(globalThis, name,
@@ -189,6 +195,8 @@ install("MutationObserver", w.MutationObserver)
 install("MouseEvent", w.MouseEvent)
 install("KeyboardEvent", w.KeyboardEvent)
 install("Event", w.Event)
+install("AbortController", w.AbortController)
+install("AbortSignal", w.AbortSignal)
 install("addEventListener", w.addEventListener.bind(w))
 install("removeEventListener", w.removeEventListener.bind(w))
 install("dispatchEvent", w.dispatchEvent.bind(w))

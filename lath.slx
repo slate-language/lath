@@ -255,7 +255,7 @@ instance(root: object, parent, el, kind: string) -> object =
 // joined here, before a single instance is made, and both hosts see the same child list.
 //
 // **React writes a `<!-- -->` between them instead and reads it back as the seam. That answer is not
-// available here and would be the worse one anyway.** `slate:dom` cannot tell a comment from a text
+// available here and would be the worse one anyway.** A DOM host cannot tell a comment from a text
 // node -- `tagName` answers `null` for both and `nodeText` answers a comment's own data -- so a
 // hydrating walk could not consume the separator it had written; and every `html()` string would
 // carry markup no server asked for. Joining the run keeps `html()` byte for byte what it was.
@@ -369,7 +369,7 @@ textNode(root: object, s: string) =
 // around every host element's children.
 //
 // **`adopt` answers a RECORD and not a bare node**, and that is what keeps the adapter an adapter:
-// `lath.slx` may not import `slate:dom`, so it cannot ask a node its tag or its text -- the host is
+// `lath.slx` may not import the `dom` package, so it cannot ask a node its tag or its text -- the host is
 // the only thing that knows what a node is. `{ node, tag, text }`, with `tag` null for a text node.
 claimed(root: object, want: string) =
     val cursor = root.claim

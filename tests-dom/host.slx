@@ -1,11 +1,11 @@
 import { createElement, Fragment, mount, html, flush, useState } from "../lath.slx"
 import { domHost } from "../dom.slx"
-import { byId, query } from slate:dom
+import { byId, query } from dom
 import { at, click, says, shown } from "./probe.slx"
 
 // The DOM host, against a real document.
 //
-// **This is the only thing that runs `slate:dom` at all**, and every assertion here is one the string
+// **This is the only thing that puts a component on a real page**, and every assertion here is one the string
 // host cannot make: `tests/` renders to markup and a markup renderer cannot tell you that a listener
 // was taken back, that a node left the page, or that text arrived as text rather than as markup.
 //

@@ -223,9 +223,9 @@ export val LinkMark = "data-lath-link"
 // one -- which is every server, and a page that has not asked.
 //
 // **The page hands this in and this module never reaches for it**, which is the whole of what keeps
-// `lath/router` importable by a server: moving the address bar is `pushPath`, `pushPath` is
-// `slate:dom`'s, and `slate:dom` works in one host out of three. `lath/dom`'s `usePath` installs it
-// for a page that wants the ordinary arrangement.
+// `lath/router` importable by a server: moving the address bar is `pushPath`, `pushPath` is the
+// `dom` package's, and that package wants a page. `lath/dom`'s `usePath` installs it for a page that
+// wants the ordinary arrangement.
 //
 // **It is module state, so there is one of it per program.** A page with two independent routers
 // wants two, which is a thing to build when somebody has one; a router is a page's address bar and
@@ -271,7 +271,7 @@ mover() = navigate ?? builtIn
 
 // Whether a program installed a navigator of its own.
 //
-// **`lath/dom` asks this before it takes the back button, and `slate:dom` is why.** `onNavigate`
+// **`lath/dom` asks this before it takes the back button, and `onNavigate` is why.** `onNavigate`
 // keeps ONE handler for the whole program and the last registration wins -- so a hook listening for
 // a movement would silently take the listener from a page that had installed one, and the page would
 // stop hearing the back button altogether. A page that says what a movement means owns that handler.
@@ -281,8 +281,8 @@ export ownsNavigation() -> boolean = navigate != null
 //
 // **The modifiers and the button are the whole of it, and without them a router swallows the most
 // ordinary thing anybody does to a link**: cmd-click opens a tab, shift-click a window, middle-click
-// a tab, and every one of those is the browser's to do and not a framework's. `slate:dom` grew
-// `mods` and `button` on its event record for exactly this.
+// a tab, and every one of those is the browser's to do and not a framework's. `mods` and `button`
+// were added to the event record for exactly this.
 plainClick(e: object) -> boolean =
     e.button == 0 && !e.mods.meta && !e.mods.ctrl && !e.mods.shift && !e.mods.alt
 
@@ -381,8 +381,8 @@ export addressWith(f) =
 //
 // **On a server the query is the one `router()` was handed**, so a page rendered on a server and the
 // same page hydrated in a browser read the same record and the markup matches. That is why this
-// lives beside the router and not in `lath/dom`: `lath/dom` imports `slate:dom`, which works in one
-// host out of three, and a server rendering markup must not load it.
+// lives beside the router and not in `lath/dom`: `lath/dom` imports the `dom` package, whose every
+// command wants a page, and a server rendering markup must not load it.
 export useSearch() -> array =
     // **The slot is kept whether or not a page installed an address hook**, so that the two
     // arrangements have the same hook layout and the second `useState` in a component lands in the

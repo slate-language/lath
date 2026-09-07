@@ -1,7 +1,7 @@
 import { createElement, Fragment, mount, hydrate, html, flush, useState } from "../lath.slx"
 import { useSearch } from "../router.slx"
 import { domHost } from "../dom.slx"
-import { location, pushPath, back } from slate:dom
+import { location, pushPath, back } from dom
 import { at, says, shown, mutations } from "./probe.slx"
 
 // `useSearch()` against a real address bar -- which is the half `slate test tests` cannot reach.
