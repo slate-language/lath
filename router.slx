@@ -22,10 +22,31 @@
 // server and an HTTP/2 speaker, to read a query string. They moved into a module of their own that
 // asks nothing of the host, which is what this one needs.
 //
-// **There are no nested routes.** A nested router is a component that renders a router, which needs
-// nothing here and is what a page with a sidebar already writes.
+// **A TEMPLATE ENDING IN `/*` MATCHES A PREFIX AND LEAVES THE REST FOR A ROUTER BELOW IT.** That is
+// the whole of nesting: `"/notes/:id/*"` matches `/notes/7/edit`, binds `id`, and leaves `/edit` for
+// a `router(routes)` called with no path at all, which reads the remainder -- and the parameters
+// bound above it -- out of the context the outer router put the view inside.
+//
+//     val note = [
+//         { path: "/",     view: (m) -> <Body id={m.params.id}/> },
+//         { path: "/edit", view: (m) -> <Editor id={m.params.id}/> },
+//         { path: "*",     view: (m) -> <Missing at={m.path}/> },
+//     ]
+//
+//     Note(props) = <article>{router(note)}</article>
+//
+// **A NESTED ROUTER TAKES NO PATH, AND HAS TO BE INSIDE A COMPONENT.** No path, because `at` is the
+// whole URL and the one thing that must not be handed in twice is where the page is; inside a
+// component, because the context is found by walking up from whatever is rendering, and a view's
+// body runs while its PARENT renders -- before the element it returns is anywhere. So
+// `view: (m) -> <Note/>` with the nested router in `Note` is the arrangement, and
+// `view: (m) -> router(note)` reads the context one level too high.
+//
+// **A relative `Link` resolves against the route it was written inside**, which is what lets a
+// section be moved: `<Link to="edit">` under `/notes/:id` writes `/notes/7/edit`, and the same
+// component mounted under `/drafts/:id` writes the other address without being told.
 
-import { createElement, Element, useState } from "./lath.slx"
+import { createElement, Element, useState, createContext, useContext } from "./lath.slx"
 import { percentDecode, encodeComponent, parseQuery } from slate:url
 
 // A route: the template a path is matched against, and what to render when it does.
@@ -37,9 +58,14 @@ export type Route = { path: string, view: function }
 
 // What a view is handed.
 //
-// `params` are the `:name` segments, `query` is what followed the `?`, and `path` is the cleaned
-// path the match was made against -- no fragment, no query, no trailing slash.
-export type Match = { params: object, query: object, path: string }
+// `params` are the `:name` segments -- every level's, an outer router's merged into an inner one's --
+// `query` is what followed the `?`, and `path` is the cleaned path the match was made against: the
+// WHOLE path at every depth, no fragment, no query, no trailing slash.
+//
+// **`base` is what the templates down to and including this one CONSUMED, and `tail` is what is
+// LEFT** -- `null` where the template matched exactly and there is nothing below to route. A
+// relative `Link` is resolved against `base`, and a nested `router()` matches against `tail`.
+export type Match = { params: object, query: object, path: string, base: string, tail: string }
 
 // -- reading a URL -------------------------------------------------------------------------------
 
@@ -143,19 +169,40 @@ export val Anything = "*"
 // from one that did not match at all**, `{}` being perfectly ordinary for `"/about"`.
 //
 // **A `:name` binds one segment and never a slash**, so `/notes/:id` does not match `/notes/1/edit`.
-// A template that wants the rest of a path is what `"*"` is for.
+// A template that wants the rest of a path ends in `"*"`, which is what `"/notes/:id/*"` and the
+// bare last case `"*"` both are.
 export matchPath(template: string, path: string) -> object =
-    if template == Anything then return {}
+    val m = matchRoute(template, path)
 
+    if m == null then return null
+
+    m.params
+
+// The same match with what it CONSUMED and what it LEFT: `{ params, base, tail }`, or `null`.
+//
+// **`base` and `tail` are cut out of the path AS IT WAS SPELLED**, segment by segment and still
+// percent-encoded, because both of them are addresses again -- `base` is what a relative `Link` is
+// resolved against and `tail` is what a router below matches. A decoded segment put back into either
+// would be a different address the first time somebody's title had a slash in it.
+matchRoute(template: string, path: string) -> object =
     val want = segmentsOf(template)
     val got = segmentsOf(path)
 
-    if want.length != got.length then return null
+    // **A template whose last segment is `*` matches a PREFIX and keeps the rest**, which is the
+    // whole of nesting. `"*"` on its own is that with a prefix of nothing, so a last case and a
+    // nesting point are one rule rather than two.
+    val open = want.length > 0 && want[want.length - 1] == Anything
+    val need = if open then want.length - 1 else want.length
+
+    if open
+        if got.length < need then return null
+    elif got.length != need
+        return null
 
     var params = {}
     var i = 0
 
-    while i < want.length
+    while i < need
         val w = want[i]
 
         if startsWith(w, ":")
@@ -167,7 +214,24 @@ export matchPath(template: string, path: string) -> object =
 
         i = i + 1
 
-    params
+    val rest = joined(got, need, got.length)
+
+    // **Nothing left is `/` and not the empty string**, so that a nested table's `"/"` route is what
+    // a bare `/notes/7` under `"/notes/:id/*"` renders -- which is the index page of a section, and
+    // the case a person writes first.
+    { params: params, base: joined(got, 0, need),
+      tail: if !open then null elif rest == "" then "/" else rest }
+
+// A run of a path's segments back as a path -- `/a/b`, or empty where the run is.
+joined(segs: array, from: integer, to: integer) -> string =
+    var out = ""
+    var i = from
+
+    while i < to
+        out = out + "/" + segs[i]
+        i = i + 1
+
+    out
 
 // A path cut into its segments, with the empties dropped, so that `/` is no segments and `/a/` and
 // `/a` are both one.
@@ -179,36 +243,111 @@ segmentsOf(path: string) -> array =
 
     out
 
+// -- the route a view is standing in ---------------------------------------------------------------
+
+// What a router tells the tree it rendered: the match itself, for the routers and the links below it.
+//
+// **It is a CONTEXT and not module state, and that is the difference nesting is made of.** `address`
+// and `navigate` further down are one per program because a page has one address bar; a route is one
+// per PLACE IN THE TREE, and two sections under two routers have to read two different answers at
+// the same moment.
+val RouteContext = createContext(null)
+
+// The route the calling component is standing in -- `{ params, query, path, base, tail }` -- or
+// `null` where nothing above it routed.
+//
+// **It is `useContext` underneath and so keeps no hook slot**, which is what lets a control read the
+// parameters of whatever route it happens to be under, at any depth, without its author arranging
+// for them to be handed down -- and lets it be called outside a render, where it answers `null`.
+export useRoute() = useContext(RouteContext)
+
+// Two records as one, the second winning.
+//
+// **The inner route's parameters win because they are the nearer**, which is the only answer that
+// lets a section be written without knowing what the routes above it happened to call things.
+merged(outer: object, inner: object) -> object =
+    var out = {}
+
+    for [name, value] in entries(outer)
+        out[name] = value
+
+    for [name, value] in entries(inner)
+        out[name] = value
+
+    out
+
 // -- the router ----------------------------------------------------------------------------------
 
-// The first route whose template matches `at`, rendered.
+// The first route whose template matches, rendered.
 //
 // **`at` is handed in and never read from the world**, which is the whole of what makes one router
 // answer for a server and a page: `req.path` on one side, the browser's own path on the other, and
 // this file knowing about neither.
 //
+// **NO `at` MEANS A NESTED ROUTER**, which matches the `tail` its enclosing route left and inherits
+// that route's parameters, query and base. It is the same function either way and a section's table
+// reads exactly like a page's -- which is what lets a table written in another module be plugged in
+// under a route without either end knowing where the other one is mounted.
+//
 // **Nothing matching is a FAULT and not an empty render**, unless a `"*"` route says what to do. A
 // router that quietly rendered nothing would send the reader to look at the view, and the mistake is
-// a missing route.
+// a missing route. A nested table needs its own `"*"`: the outer router has committed to its route
+// by the time the tail is matched, so an unmatched tail is that SECTION's last case and not the
+// page's.
 export router(routes: array, at = null) -> Element =
-    val url = at ?? "/"
+    val outer = useRoute()
 
-    // **Where the page is, remembered for `useSearch`.** A server hands this function the request's
-    // URL and a browser hands it the address bar's, and neither of them tells anything else -- so a
-    // component below that asks for the query would have nowhere to read it. This is that nowhere,
-    // and it is why a router and a query hook live in one file.
-    addressIs(url)
+    var url = "/"
+    var base = ""
+    var inherited = {}
+    var query = {}
+    var whole = "/"
+
+    if at != null
+        // **Where the page is, remembered for `useSearch`.** A server hands this function the
+        // request's URL and a browser hands it the address bar's, and neither of them tells anything
+        // else -- so a component below that asks for the query would have nowhere to read it. This
+        // is that nowhere, and it is why a router and a query hook live in one file.
+        //
+        // **A nested router never reaches this**, and must not: the address is the whole URL, and a
+        // router handed a tail as though it were one would move the page to the tail.
+        addressIs(at)
+
+        url = at
+        whole = cleanPath(at)
+        query = parseSearch(searchOf(at))
+    elif outer == null
+        addressIs(url)
+    else
+        if outer.tail == null
+            throw "a nested router has nothing to match under " + (if outer.base == "" then "/" else outer.base) + ", whose template matched the path exactly -- a route that routes below it ends its template in \"/*\""
+
+        url = outer.tail
+        base = outer.base
+        inherited = outer.params
+        query = outer.query
+        whole = outer.path
 
     val path = cleanPath(url)
-    val query = parseSearch(searchOf(url))
 
     for route in routes
-        val params = matchPath(route.path, path)
+        val m = matchRoute(route.path, path)
 
-        if params != null
-            return route.view({ params: params, query: query, path: path })
+        if m != null
+            val here = { params: merged(inherited, m.params), query: query, path: whole,
+                         base: base + m.base, tail: m.tail }
 
-    throw "no route matches " + path + ", and there is no \"" + Anything + "\" route to fall back on"
+            // **The view is rendered INSIDE a provider**, which is what a router below it and a
+            // relative link below it both read. The value is a record and slate compares records
+            // structurally, so a render that matched the same route with the same parameters is not
+            // a change and costs nothing that stands under a `memo`.
+            return createElement(RouteContext.Provider, { value: here }, [route.view(here)])
+
+    var said = "no route matches " + path
+
+    if base != "" then said = said + " under " + base
+
+    throw said + ", and there is no \"" + Anything + "\" route to fall back on"
 
 // -- links ---------------------------------------------------------------------------------------
 
@@ -291,6 +430,54 @@ plainClick(e: object) -> boolean =
 ourOwn(to: string) -> boolean =
     to.length > 0 && to[0..<1] == "/" && !startsWith(to, "//")
 
+// Whether a destination names a scheme -- `mailto:`, `https:` -- which is what says it is not a path.
+//
+// **A `:` only counts before the first `/`, `?` or `#`**, or `notes/a:b` would be somewhere else.
+hasScheme(to: string) -> boolean =
+    var i = 0
+
+    while i < to.length
+        val c = to[i..<i + 1]
+
+        if c == ":" then return i > 0
+        if c == "/" || c == "?" || c == "#" then return false
+
+        i = i + 1
+
+    false
+
+// A `to` made absolute against the route it was written inside.
+//
+// **A `to` THAT DOES NOT START WITH A `/` IS RELATIVE TO THE ROUTE**, not to the page: `<Link
+// to="edit">` inside `/notes/:id` is `/notes/7/edit`, and the same component mounted under
+// `/drafts/:id` writes the other address without being told. That is what makes a section movable,
+// and it is the reason the base is carried down at all. `..` walks up a segment and `.` stands
+// still, the way they do everywhere else.
+//
+// **Anything with a scheme, and anything starting with a `/`, is left exactly as it was written**,
+// so `mailto:` and `//elsewhere.example` do not quietly become paths on this site.
+resolveTo(base: string, to: string) -> string =
+    val self = if base == "" then "/" else base
+
+    if to == "" then return self
+    if startsWith(to, "/") || hasScheme(to) then return to
+    if startsWith(to, "?") || startsWith(to, "#") then return self + to
+
+    val bare = bareOf(to)
+    var segs = segmentsOf(base)
+
+    for part in split(bare, "/")
+        if part == "" || part == "."
+            continue
+        elif part == ".."
+            if segs.length > 0 then segs = segs[0..<segs.length - 1]
+        else
+            push(segs, part)
+
+    val walked = joined(segs, 0, segs.length)
+
+    (if walked == "" then "/" else walked) + to[bare.length..]
+
 // An anchor that a router intercepts.
 //
 //     <Link to="/notes/42">the note</Link>
@@ -300,7 +487,12 @@ ourOwn(to: string) -> boolean =
 // click is a middle click because what was rendered is an ordinary anchor. What is added on top is a
 // handler, which `stringHost` leaves out of markup anyway.
 export Link(props: object) -> Element =
-    val to = props.to
+    // **Where this link is standing, so that a relative `to` can be resolved against it.** `useRoute`
+    // keeps no hook slot and answers `null` outside a render, so a `Link` under no router at all --
+    // on a page with one hand-written anchor, or in a test that calls it directly -- reads a base of
+    // nothing and writes the `to` it was given.
+    val here = useRoute()
+    val to = resolveTo(if here == null then "" else here.base, props.to)
 
     followed(e)
         val move = mover()

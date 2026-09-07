@@ -1,5 +1,6 @@
 import { createElement, Fragment, mount, html } from "../lath.slx"
-import { router, matchPath, cleanPath, searchOf, parseSearch, Link, Anything, navigateWith } from "../router.slx"
+import { router, matchPath, cleanPath, searchOf, parseSearch, Link, Anything, navigateWith,
+    useRoute } from "../router.slx"
 
 // The router: one URL in, one view out.
 //
@@ -221,3 +222,176 @@ WITH_NOTHING_INSTALLED_A_LINK_IS_AN_ORDINARY_ANCHOR()
 
     assertEq(seen.went, null)
     assertEq(seen.prevented, false)
+
+// -- nested routes ----------------------------------------------------------------------------------
+
+// A section's own table, written exactly as a page's is -- which is the point of it: nothing in here
+// says where the section is mounted, and `:id` is bound by a template in the OTHER table.
+noteRoutes() =
+    [{ path: "/", view: (m) -> <p>note {m.params.id}</p> },
+     { path: "/edit", view: (m) -> <p>edit {m.params.id}</p> },
+     { path: "/tags/:tag", view: (m) -> <p>{m.params.id} tagged {m.params.tag}</p> },
+     { path: Anything, view: (m) -> <p>nothing at {m.path}</p> }]
+
+// **The nested router is inside a COMPONENT**, which is what puts its read of the route under the
+// provider the outer router rendered. A `router()` called in the view lambda itself would run while
+// the OUTER component was rendering and read the route one level too high.
+Note(props: object) = <article>{router(noteRoutes())}</article>
+
+// The page's table: a root, a section that routes below it, and a last case.
+pageRoutes() =
+    [{ path: "/", view: (m) -> <p>home</p> },
+     { path: "/notes/:id/*", view: (m) -> <Note/> },
+     { path: Anything, view: (m) -> <p>no {m.path}</p> }]
+
+deep(url: string) -> string = html(mount(router(pageRoutes(), url)))
+
+@test
+A_TEMPLATE_ENDING_IN_A_STAR_MATCHES_A_PREFIX_AND_BINDS_WHAT_IS_IN_IT()
+    // **The one change to matching that nesting is made of.** Everything else about a template is
+    // what it was: `:id` still binds one segment and never a slash, and the `*` is what says the
+    // path may go on.
+    assertEq(matchPath("/notes/:id/*", "/notes/7/edit").id, "7")
+    assertEq(matchPath("/notes/:id/*", "/notes/7/tags/blue").id, "7")
+
+    // **A prefix with nothing after it still matches**, which is what makes a section's `"/"` route
+    // the page a bare `/notes/7` renders.
+    assertEq(matchPath("/notes/:id/*", "/notes/7").id, "7")
+    assertEq(matchPath("/notes/:id/*", "/notes"), null)
+    assertEq(matchPath("/notes/:id/*", "/other/7"), null)
+
+@test
+TWO_LEVELS_MATCH_AND_BOTH_LEVELS_RENDER()
+    // The outer route renders the section's chrome and the inner one renders what is inside it, from
+    // one path and with neither table naming the other.
+    assertEq(deep("/notes/7/edit"), "<article><p>edit 7</p></article>")
+
+@test
+A_NESTED_TABLES_ROOT_IS_WHAT_A_BARE_PREFIX_RENDERS()
+    // **The tail of a prefix that consumed everything is `/` and not the empty string**, so the
+    // section's index page is an ordinary `"/"` route rather than a special case somebody has to
+    // know about.
+    assertEq(deep("/notes/7"), "<article><p>note 7</p></article>")
+    assertEq(deep("/notes/7/"), "<article><p>note 7</p></article>")
+
+@test
+A_PARAMETER_BOUND_ABOVE_IS_READABLE_BELOW_AND_SO_IS_ONE_BOUND_HERE()
+    // **Every level's parameters are merged into the record a view is handed**, the nearer winning,
+    // which is what lets the section's table be written without knowing what the routes above it
+    // happened to bind.
+    assertEq(deep("/notes/7/tags/blue"), "<article><p>7 tagged blue</p></article>")
+
+@test
+THE_PATH_A_VIEW_IS_HANDED_IS_THE_WHOLE_PATH_AT_EVERY_DEPTH()
+    // A nested view matches the TAIL and is told the whole address, which is the pair a "nothing
+    // here" page needs: it is reached by the tail and has to say where the reader actually is.
+    assertEq(deep("/notes/7/nope"), "<article><p>nothing at /notes/7/nope</p></article>")
+
+@test
+AN_UNMATCHED_TAIL_IS_THE_SECTIONS_OWN_LAST_CASE_AND_SAYS_WHERE_IT_LOOKED()
+    // **The outer router has committed to its route by the time the tail is matched**, so an
+    // unmatched tail is the section's business and not the page's -- and the fault names the base it
+    // was matched under, because `/nope` on its own would send the reader to the wrong table.
+    val bare = [{ path: "/edit", view: (m) -> <p>edit</p> }]
+
+    Plain(props: object) = <article>{router(bare)}</article>
+
+    var said = ""
+
+    try
+        html(mount(router([{ path: "/notes/:id/*", view: (m) -> <Plain/> }], "/notes/7/nope")))
+    catch e
+        said = e.message
+
+    assert(contains(said, "no route matches /nope under /notes/7"), said)
+    assert(contains(said, "\"*\""), said)
+
+@test
+A_ROUTE_THAT_MATCHED_EXACTLY_HAS_NOTHING_FOR_A_ROUTER_BELOW_IT()
+    // **A template with no `/*` consumed the whole path**, so a router under it is a mistake with no
+    // answer -- and the sentence says the one thing that fixes it rather than reporting an empty
+    // tail as a path that did not match.
+    var said = ""
+
+    try
+        html(mount(router([{ path: "/notes/:id", view: (m) -> <Note/> }], "/notes/7")))
+    catch e
+        said = e.message
+
+    assert(contains(said, "nothing to match under /notes/7"), said)
+    assert(contains(said, "\"/*\""), said)
+
+@test
+A_VIEW_IS_TOLD_WHAT_ITS_ROUTE_CONSUMED_AND_WHAT_IT_LEFT()
+    val two = [{ path: "/notes/:id/*", view: (m) -> <p>{m.base}|{m.tail}</p> },
+               { path: "/about", view: (m) -> <p>{m.base}|{if m.tail == null then "nothing" else m.tail}</p> }]
+
+    assertEq(html(mount(router(two, "/notes/7/edit"))), "<p>/notes/7|/edit</p>")
+    assertEq(html(mount(router(two, "/notes/7"))), "<p>/notes/7|/</p>")
+
+    // A template that matched exactly consumed all of it and left `null`, which is what a router
+    // below it reads and refuses.
+    assertEq(html(mount(router(two, "/about"))), "<p>/about|nothing</p>")
+
+@test
+A_ROUTE_IS_READABLE_FROM_ANY_DEPTH_AND_NOT_ONLY_BY_THE_VIEW()
+    // **`useRoute` keeps no hook slot**, so a control three levels down reads the parameters of
+    // whatever route it is under without anybody arranging to pass them.
+    Reader(props: object) =
+        val r = useRoute()
+
+        <em>{r.base}|{r.params.id}|{r.params.tag}</em>
+
+    Wrapper(props: object) = <span><Reader/></span>
+
+    val one = [{ path: "/notes/:id/tags/:tag", view: (m) -> <Wrapper/> }]
+
+    assertEq(html(mount(router(one, "/notes/7/tags/blue"))),
+        "<span><em>/notes/7/tags/blue|7|blue</em></span>")
+
+    // Outside a router there is no route, and reading one is `null` rather than a fault -- so a
+    // component that wants a parameter can still be rendered on its own.
+    assertEq(useRoute(), null)
+
+@test
+A_RELATIVE_LINK_RESOLVES_AGAINST_THE_ROUTE_IT_WAS_WRITTEN_INSIDE()
+    // **Which is what makes a section movable.** The same component under `/drafts/:id` writes the
+    // other address, and nothing in it had to be told where it was mounted.
+    Side(props: object) =
+        <nav><Link to="edit">edit</Link><Link to="/about">about</Link><Link to="../8">next</Link></nav>
+
+    val one = [{ path: "/notes/:id/*", view: (m) -> <Side/> },
+               { path: "/drafts/:id/*", view: (m) -> <Side/> }]
+
+    val notes = html(mount(router(one, "/notes/7")))
+
+    assert(contains(notes, "href=\"/notes/7/edit\""), notes)
+    assert(contains(notes, "href=\"/about\""), notes)
+    assert(contains(notes, "href=\"/notes/8\""), notes)
+
+    val drafts = html(mount(router(one, "/drafts/3")))
+
+    assert(contains(drafts, "href=\"/drafts/3/edit\""), drafts)
+    assert(contains(drafts, "href=\"/drafts/8\""), drafts)
+
+@test
+A_LINK_WITH_A_SCHEME_OR_A_QUERY_IS_NOT_A_PATH_TO_JOIN()
+    // A `:` before the first slash is a scheme and the address is somebody else's; a `to` that is
+    // only a query or a fragment is this route again with something after it.
+    Side(props: object) =
+        <nav><Link to="mailto:someone@example.com">mail</Link><Link to="?sort=newest">sort</Link><Link to="#top">top</Link></nav>
+
+    val out = html(mount(router([{ path: "/notes/:id/*", view: (m) -> <Side/> }], "/notes/7")))
+
+    assert(contains(out, "href=\"mailto:someone@example.com\""), out)
+    assert(contains(out, "href=\"/notes/7?sort=newest\""), out)
+    assert(contains(out, "href=\"/notes/7#top\""), out)
+
+@test
+A_LINK_UNDER_NO_ROUTER_AT_ALL_WRITES_WHAT_IT_WAS_GIVEN()
+    // There is no route to resolve against, so a relative `to` is resolved against nothing -- which
+    // is the root, and is what a page with one hand-written anchor means by it.
+    assertEq(html(mount(<Link to="/about">about</Link>)),
+        "<a href=\"/about\" data-lath-link>about</a>")
+    assertEq(html(mount(<Link to="about">about</Link>)),
+        "<a href=\"/about\" data-lath-link>about</a>")

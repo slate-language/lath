@@ -59,6 +59,8 @@ the line that is wrong is the one in your own program.
 | `domHost(selector)` | the other one, in `lath/dom` — a real page |
 | `style(css)` | a component's stylesheet, registered once for the page |
 | `router(routes, at)`, `Link` | one URL, one view, in `lath/router` |
+| `router(routes)` | the same, nested — it matches what the route above it left |
+| `useRoute()` | the route the caller is standing in, in `lath/router` |
 | `useSearch()` | the URL's query as state, in `lath/router` |
 | `usePath()` | the address bar as state, in `lath/dom` |
 | `atom(initial, write)` | a value outside any component's own tree |
@@ -153,9 +155,10 @@ would break if the text were escaped.
 ## The router
 
 A route is a path template and a function, and there is nothing else to learn. `"/notes/:id"` matches
-`/notes/42` and binds `id`; `"*"` matches anything and is the last case. There are no regular
-expression routes, because a template is what people write and a regular expression is what they
-debug.
+`/notes/42` and binds `id`; `"*"` matches anything and is the last case; and a template ending in
+`/*` matches a prefix and leaves the rest to a router below it, which is [nesting](#nested-routes).
+There are no regular expression routes, because a template is what people write and a regular
+expression is what they debug.
 
 ```
 import { createElement, Fragment, mount, html } from lath
@@ -221,8 +224,62 @@ page number registers the built-in navigator as a side effect of asking for the 
 the last control to render would own the page's navigation, and a click would move the address bar and
 re-render that control while the application heard nothing at all.
 
-**No nested routes in this version.** A nested router is a component that renders a router, which
-needs nothing from here.
+### Nested routes
+
+**A template ending in `/*` matches a prefix and leaves the rest for a router below it.** That is the
+whole of nesting: `"/notes/:id/*"` matches `/notes/7/edit`, binds `id`, and leaves `/edit` for a
+`router(routes)` called with no path at all.
+
+```
+import { router, Link, Anything, useRoute } from lath/router
+
+noteRoutes = [
+    { path: "/",          view: (m) -> <Body id={m.params.id}/> },
+    { path: "/edit",      view: (m) -> <Editor id={m.params.id}/> },
+    { path: "/tags/:tag", view: (m) -> <Tagged id={m.params.id} tag={m.params.tag}/> },
+    { path: Anything,     view: (m) -> <Missing at={m.path}/> },
+]
+
+Note(props) =
+    <article>
+        <h1>note {useRoute().params.id}</h1>
+        <nav><Link to="edit">edit</Link></nav>
+        {router(noteRoutes)}
+    </article>
+
+routes = [
+    { path: "/",            view: (m) -> <Home/> },
+    { path: "/notes/:id/*", view: (m) -> <Note/> },
+    { path: Anything,       view: (m) -> <Missing at={m.path}/> },
+]
+```
+
+**A nested router takes no path, and has to be inside a component.** No path, because `at` is the
+whole URL and the address is not something to hand in twice; inside a component, because the route is
+found by walking up from whatever is rendering — and a view's body runs while its *parent* renders,
+before the element it returns is anywhere. So `view: (m) -> <Note/>` with the nested router in `Note`
+is the arrangement, and `view: (m) -> router(noteRoutes)` reads the route one level too high.
+
+**Parameters from every level are merged**, the nearer winning, so the section's table binds `:tag`
+and still reads the `:id` a template in the other table bound. **`m.path` is the whole path at every
+depth** — a nested view is reached by the tail and still has to be able to say where the reader is —
+and the match carries `base`, what the templates down to here consumed, and `tail`, what is left
+(`null` where the template matched exactly, which is what a router below such a route refuses).
+
+**A `to` that does not start with a `/` is relative to the route it was written inside.** `<Link
+to="edit">` under `/notes/:id` writes `/notes/7/edit`, `to=".."` walks up a segment and `to="."` is
+the route itself, so a section can be mounted somewhere else without a line of it changing. Anything
+with a scheme, and anything starting with a `/`, is left exactly as written.
+
+**A nested table needs its own `"*"` if it wants a last case.** The outer router has committed to its
+route by the time the tail is matched, so an unmatched tail is that section's business — it renders
+inside the chrome the section already drew, and the fault, where there is no last case, names the base
+it was looking under.
+
+**`useRoute()` is the route the calling component is standing in**, `{ params, query, path, base,
+tail }`, or `null` outside a router. It keeps no hook slot, so a control at any depth can read the
+parameters of whatever route it is under without being handed them, and may call it inside a
+condition.
 
 ### `useSearch()` — the query as state
 

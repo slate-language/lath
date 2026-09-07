@@ -1,8 +1,9 @@
 import { createElement, Fragment, mount, useEffect, useState } from "../lath.slx"
-import { router, Link, Anything, navigateWith, useSearch } from "../router.slx"
+import { router, Link, Anything, navigateWith, useSearch, useRoute } from "../router.slx"
 import { domHost, usePath } from "../dom.slx"
-import { location, pushPath, back, byId, onNavigate } from dom
-import { at, click, says, shown, navigations, prevented } from "./probe.slx"
+import { location, pushPath, back, forward, byId, onNavigate } from dom
+import { at, click, says, shown, navigations, prevented, mutations, touched, focus,
+    active } from "./probe.slx"
 
 // The router against a real document: a link is clicked, the address bar moves, the view changes --
 // and the clicks that belong to the browser are left to it.
@@ -274,3 +275,150 @@ async AND_THE_BACK_BUTTON_STILL_REACHES_A_PAGE_THAT_LISTENS_FOR_IT_ITSELF()
 @teardown
 nobodysNavigator()
     navigateWith(null)
+
+// -- nested routes, against a real document ----------------------------------------------------------
+
+// What the section shows inside its own chrome, as two separate components -- so that moving between
+// them is a change the reconciler cannot make by patching text, and the count below is the real cost
+// of a nested move rather than the cheapest one.
+Body(props: object) = <p id="inner">note {props.id}</p>
+
+Editor(props: object) = <p id="inner">editing {props.id}</p>
+
+// The section's own table. **Nothing in it says where the section is mounted**, and `:id` is bound by
+// a template in the other table entirely.
+noteRoutes() =
+    [{ path: "/", view: (m) -> <Body id={m.params.id}/> },
+     { path: "/edit", view: (m) -> <Editor id={m.params.id}/> },
+     { path: Anything, view: (m) -> <p id="inner">nothing at {m.path}</p> }]
+
+// The chrome: a heading, two RELATIVE links, a field to put the caret in, and the router below them.
+// Everything above the router is what must not be rebuilt when the tail changes.
+Section(props: object) =
+    val here = useRoute()
+
+    <article id="section">
+        <h1 id="title">note {here.params.id}</h1>
+        <nav><Link to="edit" id="toEdit">edit</Link><Link to="." id="toRead">read</Link><Link to="/notes/8" id="toEight">eight</Link></nav>
+        <input id="keep"/>
+        {router(noteRoutes())}
+    </article>
+
+nestedRoutes() =
+    [{ path: "/", view: (m) -> <p id="view">home</p> },
+     { path: "/notes/:id/*", view: (m) -> <Section/> },
+     { path: Anything, view: (m) -> <p id="view">nothing at {m.path}</p> }]
+
+Nested(props: object) = router(nestedRoutes(), usePath())
+
+// **`navigateWith(null)` first**, because a page that said what a link means says it for the whole
+// program: the tests above install one, and this arrangement is the ordinary one where `usePath`
+// moves the address itself.
+freshNested(from: string) =
+    navigateWith(null)
+    pushPath(from)
+    at("")
+
+    mount(<Nested/>, domHost("#page"))
+
+@test
+async A_NESTED_LINK_IS_RESOLVED_AGAINST_THE_ROUTE_AND_THE_PAGE_RENDERS_BOTH_LEVELS()
+    freshNested("/notes/7")
+
+    assertEq(says("title"), "note 7")
+    assertEq(says("inner"), "note 7")
+    assert(contains(shown(), "href=\"/notes/7/edit\""), shown())
+    assert(contains(shown(), "href=\"/notes/7\""), shown())
+
+@test
+async A_CLICK_INSIDE_A_NESTED_ROUTER_CHANGES_THE_TAIL_AND_NOTHING_ABOVE_IT()
+    // **The claim nesting is worth having for**, and it is measured twice. The counts say the page
+    // was changed by the size of the change and not the size of the view; the caret says the chrome
+    // is the SAME nodes and not a faithful copy of them, which a count alone cannot tell.
+    freshNested("/notes/7")
+
+    focus(byId("keep"))
+
+    // **The baseline is taken after the first turn**, the mount's own effects and the address hook's
+    // first state settling one tick after the render that made them.
+    await sleep(1)
+
+    val records = mutations()
+    val nodes = touched()
+
+    click("#toEdit")
+
+    await sleep(1)
+
+    assertEq(location().path, "/notes/7/edit")
+    assertEq(says("inner"), "editing 7")
+    assertEq(says("title"), "note 7")
+
+    // **One node out and one node in, in two records**, which is the whole of what changed: `Body`
+    // and `Editor` are two components, so the tail is rebuilt and everything above it is left alone.
+    // A router that re-rendered the section would have moved the heading, the three anchors and the
+    // field as well.
+    assertEq(touched() - nodes, 2)
+    assertEq(mutations() - records, 2)
+
+    // And the caret never moved, which is what says the field was not rebuilt underneath it.
+    assertEq(active(), "keep")
+
+@test
+async A_LINK_THAT_CHANGES_A_PARAMETER_ABOVE_CHANGES_BOTH_LEVELS()
+    // The other half of the same claim: what the outer template binds is not frozen by nesting, and
+    // an absolute link that moves it moves the heading and the tail together.
+    freshNested("/notes/7")
+
+    await sleep(1)
+
+    click("#toEight")
+
+    await sleep(1)
+
+    assertEq(location().path, "/notes/8")
+    assertEq(says("title"), "note 8")
+    assertEq(says("inner"), "note 8")
+    assert(contains(shown(), "href=\"/notes/8/edit\""), shown())
+
+@test
+async THE_HISTORY_BUTTONS_WALK_A_NESTED_PATH_THE_WAY_THEY_WALK_ANY_OTHER()
+    // **A nested move is an ordinary history entry**, because a `Link` pushes whatever level it was
+    // written at and the router is a function of the whole path either way.
+    freshNested("/notes/7")
+
+    click("#toEdit")
+
+    await sleep(1)
+
+    assertEq(location().path, "/notes/7/edit")
+
+    click("#toRead")
+
+    await sleep(1)
+
+    assertEq(location().path, "/notes/7")
+    assertEq(says("inner"), "note 7")
+
+    back()
+
+    await sleep(50)
+
+    assertEq(location().path, "/notes/7/edit")
+    assertEq(says("inner"), "editing 7")
+
+    forward()
+
+    await sleep(50)
+
+    assertEq(location().path, "/notes/7")
+    assertEq(says("inner"), "note 7")
+
+@test
+async A_TAIL_NOTHING_IN_THE_SECTION_MATCHES_IS_THE_SECTIONS_OWN_LAST_CASE()
+    // The outer router committed to `/notes/:id/*` at the first segment, so the page's `"*"` never
+    // sees this -- the section's does, inside the chrome the section had already drawn.
+    freshNested("/notes/7/nowhere")
+
+    assertEq(says("title"), "note 7")
+    assertEq(says("inner"), "nothing at /notes/7/nowhere")
