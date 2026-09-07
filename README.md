@@ -380,8 +380,14 @@ hydrate(<App/>, domHost("#app"))
 
 **A hydrated page makes no DOM mutations at all**, and that is measured rather than asserted —
 `tests-dom/hydrate.slx` watches the page with a `MutationObserver` and requires it to record nothing.
-Everything that would have been created is adopted, every attribute is compared before it is written,
-and the child lists are not set at all, each child having been adopted from its parent in order.
+Everything that would have been created is adopted, every attribute and every property is compared
+against what the page holds before it is written, and the child lists are not set at all, each child
+having been adopted from its parent in order.
+
+**`value` and `checked` are properties and are compared like everything else.** A field is asked what
+it holds — not what its markup said — so a re-render carrying the value that is already there writes
+nothing, and one carrying something else writes it. That is what keeps a controlled input showing the
+tree and a hydrating render from recording a change to a value it did not make.
 
 **Handlers are attached, and that is what hydration is for.** The markup a server sent is already the
 page; what it does not have is a single event listener, and the tree this walks is what installs
@@ -414,16 +420,17 @@ component did not ask for.
 **Two text children in a row are one text child.** `<h2>{n} replies</h2>` writes `<h2>2 replies</h2>`
 and a parser reads one text node back, so lath joins the run before it makes an instance. React
 writes a `<!-- -->` between them and reads it back as the seam; that answer would put markup nobody
-asked for in every server render, and a DOM host cannot tell a comment from a text node anyway.
+asked for in every server render.
 
 **An empty text child is no node at all.** `<p>{""}</p>` writes `<p></p>` — there is nothing for an
 empty string to write — so the tree holds nothing for it either, and the node arrives the moment the
 text does and goes again when it goes.
 
-**The one pair that cannot be joined is a text child beside a component that renders text.**
-`<p>hello <Name/></p>` is two instances with two nodes and one text node in the page, and it is a
-mismatch that says so in as many words. Write the run as one expression — `<p>{"hello " + name}</p>`
-— or put the component's text in an element of its own.
+**The one pair that cannot be joined is a text child beside a component that renders text**, and the
+claim cuts the page's node instead. `<p>hello <Name/></p>` is two instances with two nodes, and a
+parser made one text node out of both — so hydration splits it in two as it walks, the head going to
+the text child and the tail to the component that follows. It is the one place a hydrating render
+touches the page, and it is what a run of text costs.
 
 ## The host is behind an adapter, and there are two of them
 
@@ -545,6 +552,19 @@ tested against somebody else's reading of the specification rather than against 
 written beside it.
 
 ## Requirements
+
+The [`dom`](https://github.com/slate-language/dom) package **0.1.1** or newer as of lath 0.9.0, for
+five names the DOM host and its tests now stand on: **`property`**, the reader that lets `value` and
+`checked` be compared against what a field holds; **`nodeKind`**, which tells a comment from a text
+node where `tagName` calls both of them `null`; **`splitText`**, which cuts the one run of text a
+tree cannot join; and **`dispatch`** and **`observe`**, which is what the DOM suite sends events and
+counts mutations with.
+
+**A host of your own answers two more things from `adopt`.** The record is
+`{ node, kind, tag, text, split }`: `kind` is the host's own word for what the node is — `"element"`,
+`"text"`, `"comment"` — and `split(at)` cuts a text node in two, the tail becoming the next child.
+A host that answers neither still works: a claim reads `tag` as it always did, and one that cannot
+cut reports the mismatch it used to.
 
 slate **0.0.40** or newer as of lath 0.8.0, and `lath/dom` now depends on the
 [`dom`](https://github.com/slate-language/dom) package (**0.1.1** or newer) rather than the

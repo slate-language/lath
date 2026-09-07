@@ -1,14 +1,16 @@
-// What a test can ask a real document that the `dom` package has no name for.
+// What a test can ask a real document.
 //
-// **Three things it does not do, reached through names it does.** Nothing in `dom` dispatches an
-// event, observes a mutation, or counts what the browser was left to do itself. So the harness in
-// `setup.mjs` puts each of the three where an ordinary `dom` call finds it: a property whose setter
-// dispatches, and a `<meta>` in the head carrying the counts.
+// **The `dom` package answers all but one of these itself.** `dispatch` sends an event and `observe`
+// counts what the page recorded, so what used to be a property setter installed on
+// `Element.prototype` and a `MutationObserver` in `setup.mjs` is now two ordinary calls in this
+// file. The one thing left in the harness is the count of navigations jsdom refused, which is read
+// off its console and could not be anything a page has a name for.
 //
 // **Nothing here fakes anything.** jsdom builds the event, jsdom dispatches it, jsdom's own
 // `MutationObserver` counts what changed. This file is the wire, not the answer.
 
-import { byId, query, markup, nodeText, attribute, setProperty, focus as domFocus, activeElement, tagName } from dom
+import { byId, query, markup, nodeText, attribute, setProperty, focus as domFocus, activeElement,
+    tagName, dispatch, observe } from dom
 
 // The page emptied, with whatever a server would have sent already inside the container.
 //
@@ -37,8 +39,8 @@ export container() = byId("page")
 // What the container holds now, as markup.
 export shown() -> string = markup(container())
 
-// The element carrying what the harness measured. It is in the HEAD, so that writing to it is not
-// itself a mutation of the page being watched.
+// The element the harness publishes its one count on. It is in the HEAD, so that writing to it is
+// not itself a mutation of the page being watched.
 probe() = byId("lath-probe")
 
 // **`number` and not `integer`, which reads a number out of a string where `integer` converts one
@@ -48,24 +50,44 @@ count(name: string) -> integer =
 
     if said == null then 0 else integer(number(said))
 
-// How many mutation RECORDS the observer has delivered for the page so far.
+// What the page has recorded since this module was imported.
 //
-// **A running total and not a reading that resets**, so a test takes it before and after and
-// subtracts -- which is the only shape that works when everything shares one document.
-export mutations() -> integer = count("data-mutations")
+// **Running totals and not readings that reset**, so a test takes one before and after and
+// subtracts -- which is the only shape that works when every test in this directory shares one
+// document.
+var records = 0
+var moved = 0
+
+counted(list: array) =
+    for r in list
+        records = records + 1
+
+        if r.type == "children" then moved = moved + r.added + r.removed else moved = moved + 1
+
+    null
+
+// How many mutation RECORDS the browser has made for the page so far.
+export mutations() -> integer = records
 
 // How many NODES those records added or removed, plus one for each attribute or text change.
 //
 // **The pair is the measurement.** A hydrated page has to record nothing at all, which the count of
 // records says; a reorder that replaces a whole child list makes ONE record and moves a thousand
 // nodes, which only this says.
-export touched() -> integer = count("data-touched")
+export touched() -> integer = moved
 
 // How many clicks the browser was allowed to follow, which is how many the router declined.
+//
+// **The one thing still read off the harness**, and it is not a page's answer at all: jsdom raises
+// *"Not implemented: navigation to another Document"* on its console when a click on an anchor is
+// left alone, so counting those is counting what a real browser would have done and jsdom would not.
 export navigations() -> integer = count("data-navigations")
 
-// Whether the last event dispatched had its default prevented.
-export prevented() -> boolean = attribute(probe(), "data-prevented") == "true"
+// Whether the last event dispatched had its default prevented. `dispatch` answers whether NOTHING
+// cancelled the event, which is the same fact the other way up.
+var cancelled = false
+
+export prevented() -> boolean = cancelled
 
 // An event dispatched on a node -- by the browser, and shaped as a person's would be.
 //
@@ -74,9 +96,42 @@ export prevented() -> boolean = attribute(probe(), "data-prevented") == "true"
 //     fire(node, "click button=1")
 //     fire(node, "keydown key=Enter")
 export fire(node, spec: string) =
-    setProperty(node, "lathEvent", spec)
+    cancelled = !dispatch(node, eventOf(spec))
 
     null
+
+// The spec above, as the record `dispatch` reads: the type, then the modifiers and the one-word
+// settings a test writes after it.
+eventOf(spec: string) -> object =
+    val parts = split(spec, " ")
+    var meta = false
+    var ctrl = false
+    var shift = false
+    var alt = false
+    var button = null
+    var key = null
+
+    for i in 1..<parts.length
+        val part = parts[i]
+        val eq = indexOf(part, "=")
+
+        if part == "" then continue
+
+        if eq == null
+            if part == "meta" then meta = true
+            elif part == "ctrl" then ctrl = true
+            elif part == "shift" then shift = true
+            elif part == "alt" then alt = true
+            else throw "there is no event modifier called " + part
+        elif part[0..<eq] == "button"
+            button = integer(number(part[eq + 1..<part.length]))
+        elif part[0..<eq] == "key"
+            key = part[eq + 1..<part.length]
+        else
+            throw "there is nothing an event takes called " + part[0..<eq]
+
+    { type: parts[0], mods: { meta: meta, ctrl: ctrl, shift: shift, alt: alt },
+        button: button, key: key }
 
 // The same, on the first node matching a selector.
 export click(selector: string, spec: string = "click") =
@@ -121,3 +176,12 @@ export inHead() -> string =
     val node = query("head")
 
     markup(node)
+
+// **The watch is installed AT IMPORT**, the way `dom.slx` installs its navigator: every test in this
+// directory shares one document and reads the counts as a difference, so the observer has to be
+// running before the first of them renders anything.
+//
+// **It watches the BODY and nothing above it**, which is what leaves the head free: the one count
+// the harness still publishes goes on a `<meta>` up there, where writing it is not a mutation this
+// would see.
+observe(query("body"), { children: true, attributes: true, text: true, subtree: true }, counted)

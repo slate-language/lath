@@ -1,7 +1,7 @@
 import { createElement, Fragment, mount, hydrate, html, flush, stringHost, useState,
     Boundary } from "../lath.slx"
 import { domHost } from "../dom.slx"
-import { attribute, byId } from dom
+import { attribute, byId, children } from dom
 import { at, click, says, shown, mutations } from "./probe.slx"
 
 // Hydration against a real document, measured by a `MutationObserver`.
@@ -234,11 +234,11 @@ async AN_ATTRIBUTE_THE_SERVER_GOT_WRONG_IS_STILL_THE_ONE_THING_A_HYDRATION_WRITE
     assertEq(attribute(byId("notes"), "rows"), "5")
 
 @test
-async A_FIELD_IS_STILL_WRITTEN_ON_EVERY_RENDER_AFTER_THE_FIRST()
-    // **The comparison is the FIRST write to a node and no other**, which is the whole of why this
-    // test is here. A page parsed from markup has the property its attribute gave it and nobody has
-    // typed yet; afterwards the attribute no longer says what the field holds, so a render that
-    // skipped would leave a controlled input showing something the tree does not.
+async A_RE_RENDER_CARRYING_A_NEW_VALUE_WRITES_IT()
+    // **A controlled field shows what the tree says**, so a render carrying something the field does
+    // not hold has to reach the page. This is the half a comparison could break: the comparison is
+    // against what the FIELD holds, not against what the tree last said, and a host that skipped
+    // here would leave an input showing something the tree does not.
     var setter = null
 
     Field(props: object) =
@@ -260,6 +260,85 @@ async A_FIELD_IS_STILL_WRITTEN_ON_EVERY_RENDER_AFTER_THE_FIRST()
     await sleep(1)
 
     assertEq(attribute(byId("token"), "value"), "b-token")
+
+@test
+async A_RE_RENDER_CARRYING_THE_VALUE_THE_FIELD_ALREADY_HOLDS_WRITES_NOTHING()
+    // **The other half, and the observer is the only thing that can say it.** Setting a property is
+    // not a call the framework could have counted -- but on a `hidden` input the property reflects
+    // to the content attribute, so the browser records a write of the value the field already had.
+    // The state that moves here is deliberately not on the page: what is measured is an ordinary
+    // re-render carrying the value that is already there.
+    var setter = null
+
+    Field(props: object) =
+        val [nudge, setNudge] = useState(0)
+
+        setter = setNudge
+
+        <input id="token" type="hidden" name="token" value="a-token"/>
+
+    at(html(mount(<Field/>, stringHost())))
+
+    await sleep(1)
+
+    val root = hydrate(<Field/>, domHost("#page"))
+
+    await sleep(1)
+
+    val before = mutations()
+
+    setter(1)
+    flush(root)
+
+    await sleep(1)
+
+    assertEq(mutations() - before, 0)
+
+@test
+async A_TEXT_CHILD_BESIDE_A_COMPONENT_HYDRATES_BY_CUTTING_WHAT_THE_PARSER_MADE()
+    // **The one run lath cannot join in the tree, closed at the claim instead.** `<p>hello <Name/></p>`
+    // is two instances each owning a node and the parser made one text node out of both, so the
+    // claim cuts it: the head is this child's and the tail is claimed by the component that follows.
+    Name(props: object) = "ed"
+
+    Greeting(props: object) = <p>hello <Name/></p>
+
+    at(html(mount(<Greeting/>, stringHost())))
+
+    await sleep(1)
+
+    hydrate(<Greeting/>, domHost("#page"))
+
+    await sleep(1)
+
+    // The page reads the same either way -- which is the point, markup being unable to say where one
+    // text child ends -- so what says the cut happened is the count of nodes inside the `<p>`.
+    assertEq(shown(), "<div id=\"page\"><p>hello ed</p></div>")
+    assertEq(children(children(byId("page"))[0]).length, 2)
+
+@test
+A_COMMENT_IS_NAMED_A_COMMENT_AND_NOT_QUOTED_AS_THE_TEXT_A_SERVER_WROTE()
+    // **`tagName` answers `null` for a comment and for a text node alike and `nodeText` answers a
+    // comment's own data**, so a walk reading the tag alone puts the inside of a comment in the
+    // message as though a server had rendered it. `nodeKind` is the page's own answer to which of
+    // the two this is, and a reader looking for text that is not there is what it saves.
+    Said(props: object) = <p>hello</p>
+
+    Wrapped(props: object) = <div><span>x</span></div>
+
+    at("<p><!-- hello --></p>")
+
+    val onText = fell(() -> hydrate(<Said/>, domHost("#page")))
+
+    assert(contains(onText, "wants the text \"hello\""))
+    assert(contains(onText, "has a comment"))
+
+    at("<div><!-- x --></div>")
+
+    val onElement = fell(() -> hydrate(<Wrapped/>, domHost("#page")))
+
+    assert(contains(onElement, "wants <span>"))
+    assert(contains(onElement, "has a comment"))
 
 @test
 async TEXT_THAT_STOPS_BEING_EMPTY_ARRIVES_AS_A_NODE_ON_THE_PAGE()

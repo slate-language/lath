@@ -104,8 +104,23 @@ pageHost(top: array) =
         if index >= kids.length then return null
 
         val node = kids[index]
+        val what = if node.tag == null then "text" else "element"
 
-        { node: node, tag: node.tag, text: node.text ?? "" }
+        // **The cut a run of text needs**, which a host that can be adopted from has to answer: the
+        // head stays in the node the claim took and the tail becomes the next child, so the child
+        // that follows claims the rest of the run. A page built out of markup holds one node where
+        // a text child stands beside a component that renders text, and the tree holds two.
+        cut(at: integer) =
+            val whole = node.text ?? ""
+            val tail = words(whole[at..<whole.length])
+
+            node.text = whole[0..<at]
+
+            insert(kids, index + 1, tail)
+
+            tail
+
+        { node: node, kind: what, tag: node.tag, text: node.text ?? "", split: cut }
 
     // **Counted rather than applied**, which is the same measurement the rest of this host makes: a
     // hydrating render must ask for nothing at all, the markup it is standing on already carrying a
@@ -377,32 +392,34 @@ A_RUN_OF_TEXT_CHILDREN_ADOPTS_THE_ONE_NODE_A_PARSER_MADE()
     assertEq(host.seen.took, 0)
 
 @test
-A_TEXT_CHILD_BESIDE_A_COMPONENT_THAT_RENDERS_TEXT_IS_THE_ONE_RUN_THAT_CANNOT_BE_JOINED()
-    // **The error path, and it is a real limit rather than an oversight**: the two halves live in
-    // different instances, each with its own node to update, so nothing can join them without one of
-    // them owning half of somebody else's text node. The message says so where the reader is looking,
-    // and the answer is a single expression -- `<p>{"hello " + name}</p>`.
+A_TEXT_CHILD_BESIDE_A_COMPONENT_THAT_RENDERS_TEXT_IS_THE_RUN_THE_CLAIM_CUTS()
+    // **The two halves live in different instances, each with its own node to update**, so joining
+    // them in the tree would make one of them the owner of half of somebody else's node. The claim
+    // cuts the page's node instead: the page ends up holding what the tree does, one node each, and
+    // nothing was created to do it.
     Name(props: object) = "ed"
 
     Greeting(props: object) = <p>hello <Name/></p>
 
     val host = pageHost([tag("p", {}, [words("hello ed")])])
-    val said = fell(() -> hydrate(<Greeting/>, host))
 
-    assert(contains(said, "at page > 0 > 0"))
-    assert(contains(said, "wants the text \"hello \""))
-    assert(contains(said, "has the text \"hello ed\""))
-    assert(contains(said, "beside a component that renders text"))
+    hydrate(<Greeting/>, host)
+
+    assertEq(host.seen.made, 0)
+    assertEq(host.seen.text, 0)
+    assertEq(host.seen.put, 0)
+    assertEq(host.adopt(null, 0).node.kids.length, 2)
 
 @test
-A_TEXT_MISMATCH_THAT_IS_NOT_A_JOINED_RUN_SAYS_NOTHING_ABOUT_ONE()
-    // **The hint is for the case it is about and no other.** A server that rendered different words
-    // is an ordinary mismatch, and pointing its reader at text children in a row would send them
-    // looking for something that is not there.
+A_TEXT_MISMATCH_THAT_IS_NOT_A_RUN_IS_STILL_A_MISMATCH()
+    // **The cut is for the case it is about and no other.** A server that rendered different words
+    // has not written a run this tree can take apart -- the text does not begin with what the tree
+    // wanted -- so it faults exactly as any other disagreement does.
     val host = pageHost([tag("p", { class: "a" }, [words("goodbye"), tag("b", {}, [words("there")])])])
     val said = fell(() -> hydrate(<Same/>, host))
 
-    assert(!contains(said, "beside a component"))
+    assert(contains(said, "wants the text \"hello\""))
+    assert(contains(said, "has the text \"goodbye\""))
 
 @test
 AN_EMPTY_TEXT_CHILD_MAKES_NO_NODE_AT_ALL()

@@ -254,15 +254,14 @@ instance(root: object, parent, el, kind: string) -> object =
 // would ask the page for a node it has not got, so the framework holds one as well: the run is
 // joined here, before a single instance is made, and both hosts see the same child list.
 //
-// **React writes a `<!-- -->` between them instead and reads it back as the seam. That answer is not
-// available here and would be the worse one anyway.** A DOM host cannot tell a comment from a text
-// node -- `tagName` answers `null` for both and `nodeText` answers a comment's own data -- so a
-// hydrating walk could not consume the separator it had written; and every `html()` string would
-// carry markup no server asked for. Joining the run keeps `html()` byte for byte what it was.
+// **React writes a `<!-- -->` between them instead and reads it back as the seam. Joining is the
+// better answer and this keeps it**, a separator putting markup no server asked for into every
+// `html()` string; joining the run keeps that string byte for byte what it was.
 //
 // **What this cannot join is a text child next to a COMPONENT that renders text**, the two standing
-// in different instances -- `<p>hello <Name/></p>` is still a mismatch, and `claimText` says so in
-// as many words.
+// in different instances -- `<p>hello <Name/></p>`. The page holds one node there and the tree holds
+// two, so `claimText` CUTS the page's node in half as it walks: joining is what the tree does with
+// what it can see, and the cut is what a claim does with what it cannot.
 flatten(kids: array, out: array) -> array =
     for kid in kids
         if kid == null || kid == undefined || kid == true || kid == false
@@ -370,7 +369,9 @@ textNode(root: object, s: string) =
 //
 // **`adopt` answers a RECORD and not a bare node**, and that is what keeps the adapter an adapter:
 // `lath.slx` may not import the `dom` package, so it cannot ask a node its tag or its text -- the host is
-// the only thing that knows what a node is. `{ node, tag, text }`, with `tag` null for a text node.
+// the only thing that knows what a node is. `{ node, kind, tag, text, split }`, with `tag` null for
+// anything that is not an element, `kind` the host's own word for what the node is, and `split` --
+// where the host has one -- the cut that takes a run of text apart.
 claimed(root: object, want: string) =
     val cursor = root.claim
     val found = root.host.adopt(cursor.into, cursor.at)
@@ -386,29 +387,43 @@ claimed(root: object, want: string) =
 claimText(root: object, want: string) =
     val found = claimed(root, "the text " + toJSON(want))
 
-    if found.tag != null then mismatch(root, "the text " + toJSON(want), "<" + found.tag + ">")
+    if found.tag != null || (found.kind ?? null) == "comment"
+        mismatch(root, "the text " + toJSON(want), saw(found))
+
+    // **A page holding the text the tree wanted AND MORE is a run of text a parser joined**, which
+    // is the one thing markup cannot say: two text children in a row serialise to one string and
+    // come back as one node. `flatten` joins such a run before an instance is made, and the pair it
+    // cannot join is a text child standing beside a component that renders text -- two instances
+    // that would each own half of one node. **The cut is what makes them two nodes**, so the page
+    // ends up holding what the tree does and the run after this child is claimed by whoever wrote
+    // it. A host with nothing to cut with says so the way it always did.
     if found.text != want
-        mismatch(root, "the text " + toJSON(want),
-            "the text " + toJSON(found.text) + runOn(want, found.text))
+        val cut = found.split ?? null
+
+        if cut == null || !runsOn(want, found.text)
+            mismatch(root, "the text " + toJSON(want), "the text " + toJSON(found.text))
+
+        cut(want.length)
 
     pop(root.trail)
 
     found.node
 
-// The one text mismatch worth explaining rather than reporting, said where the reader is looking.
-//
-// **A page holding the text the tree wanted AND MORE is a run of text a parser joined**, which is
-// the one thing markup cannot say: two text children in a row serialise to one string and come back
-// as one node. `flatten` joins such a run before an instance is made, so the pair that reaches here
-// is the pair it cannot join -- a text child standing beside a component that renders text, the two
-// living in different instances. The answer is a single expression: `<p>{"hello " + name}</p>`.
-runOn(want: string, found: string) -> string =
-    if want == "" || found.length <= want.length || found[0..<want.length] != want then return ""
+// Whether the page's node holds the text this child wanted and then the next child's as well.
+runsOn(want: string, found: string) -> boolean =
+    want != "" && found.length > want.length && found[0..<want.length] == want
 
-    // **The brackets are what continue the line**, a trailing `+` outside a bracket pair not being a
-    // continuation in slate.
-    (" -- a parser reads two text children in a row as ONE text node, and the pair lath cannot join" +
-        " for you is a text child beside a component that renders text")
+// What the page was found to hold, said the way every mismatch message reads it.
+//
+// **A COMMENT IS NOT TEXT AND `tag` CANNOT SAY SO**: a host answers `null` for the tag of both, and
+// a comment's own data reads back as though it were the text a server had written -- so a message
+// built from `tag` alone quotes the inside of a comment and names it text. `kind` is the host's own
+// word for what the node is, and this is the one place it is read.
+saw(found: object) -> string =
+    if (found.kind ?? null) == "comment" then return "a comment"
+    if found.tag == null then return "the text " + toJSON(found.text)
+
+    "<" + found.tag + ">"
 
 // **This one does NOT pop the trail and the text one does**, which is the whole of how a path reads
 // `page > 0 > 1`: an element's own index has to stay on the trail while its children are walked, and
@@ -416,9 +431,7 @@ runOn(want: string, found: string) -> string =
 claimElement(root: object, tag: string) =
     val found = claimed(root, "<" + tag + ">")
 
-    if found.tag != tag
-        mismatch(root, "<" + tag + ">",
-            if found.tag == null then "the text " + toJSON(found.text) else "<" + found.tag + ">")
+    if found.tag != tag then mismatch(root, "<" + tag + ">", saw(found))
 
     found.node
 

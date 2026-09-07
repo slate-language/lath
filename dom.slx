@@ -13,7 +13,7 @@
 import { createElement, createText, setAttribute, removeAttribute, setProperty, on, off,
     setChildren, setText, byId, query, markup } from dom
 import { insertBefore, removeChild } from dom
-import { children, tagName, nodeText, attribute } from dom
+import { children, tagName, nodeText, attribute, property, nodeKind, splitText } from dom
 import { location, pushPath, replacePath, onNavigate } from dom
 import { Host, useState, useEffect } from "./lath.slx"
 import { navigatesWith, addressIs, addressWith, ownsNavigation } from "./router.slx"
@@ -79,13 +79,8 @@ export domHost(into: string) -> Host =
     // that only ever set things would get wrong: a `disabled` that goes away has to be removed, and
     // a handler replaced by a new closure has to be detached or the old one fires too.
     setProps(node: external, props: object) =
-        // **Whether this host has ever written to this node**, which is the one thing that tells a
-        // node adopted from the page apart from one this host created. It is what `value` and
-        // `checked` are compared on the strength of below.
-        //
         // **`?? null` and not a bare comparison**: a key a `Map` has never been given reads
         // `undefined`, which is not `null` to slate, and `??` is what makes the two one answer.
-        val first = (attrs.get(node) ?? null) == null
         val had = attrs.get(node) ?? []
         var now = []
 
@@ -103,17 +98,15 @@ export domHost(into: string) -> Host =
             // what it holds now, so a re-render setting the attribute would leave a typed-in field
             // alone and the page would appear frozen.
             //
-            // **THE FIRST WRITE TO A NODE IS THE ONE THAT COMPARES, AND ONLY THE FIRST.** A page
-            // parsed from markup has the property the attribute gave it -- nobody has typed yet --
-            // so on a node this host has not written to before, an attribute that already says what
-            // is about to be set means the write is not needed. On a `hidden` input, and on every
-            // other field whose `value` reflects to the content attribute, that write is a mutation
-            // an observer records, which is the whole of the defect this closes. Afterwards the
-            // property is set unconditionally, exactly as it was: past the first render the
-            // attribute no longer says what the field holds, and skipping would leave a controlled
-            // input showing something the tree does not.
+            // **`property` READS ONE BACK, so this is the same comparison every other prop gets**,
+            // on every render rather than on the first. The field itself says what it holds: a
+            // `hidden` input whose property reflects to its content attribute is not written again
+            // for the value it already has, and one somebody has typed in is written the moment the
+            // tree carries something else and left alone when it does not.
             if name == "value" || name == "checked"
-                if !first || attribute(node, name) != pageValue(value) then setProperty(node, name, value)
+                val held = property(node, name)
+
+                if held != pageProperty(held, value) then setProperty(node, name, value)
             elif attribute(node, name) != pageValue(value)
                 // **Comparing before setting is what makes a hydrated page make no mutations at
                 // all**, and it is worth having on every render and not only the first: an attribute
@@ -301,8 +294,19 @@ export domHost(into: string) -> Host =
     //
     // **It answers a RECORD and not a bare node.** `lath.slx` may not import the `dom` package, so it
     // cannot ask a node its tag or its text; the host is the only thing that knows what a node is,
-    // and handing back `{ node, tag, text }` is what keeps it that way. `tag` is `null` for a text
-    // node, which is how the framework tells the two apart.
+    // and handing back `{ node, kind, tag, text, split }` is what keeps it that way. `tag` is `null`
+    // for a text node, which is how the framework tells the two apart.
+    //
+    // **`kind` IS THERE BECAUSE `tag` CANNOT TELL A COMMENT FROM TEXT.** `tagName` answers `null`
+    // for both and `nodeText` answers a comment's own data, so a claim walk reading `tag` alone
+    // takes a comment for a piece of text and reports a mismatch quoting the comment's body as
+    // though a server had written it. `nodeKind` is the page's own answer and the record carries it.
+    //
+    // **`split` IS A CLOSURE OVER THIS CHILD rather than an eleventh host function**, which keeps
+    // the adapter ten and the `Host` type unchanged: only a host that can be adopted from can split
+    // anything, and this is the only place a claim walk holds one of its children. It cuts the text
+    // node at an offset and puts the tail in the list this host keeps, so the next child claimed is
+    // the rest of the run.
     //
     // **The list is read ONCE per parent and kept**, which is a walk of a child list per parent
     // rather than one per child adopted. It also leaves this host knowing what every parent holds
@@ -324,7 +328,16 @@ export domHost(into: string) -> Host =
 
         val node = list[index]
 
-        { node: node, tag: tagName(node), text: nodeText(node) }
+        // The tail of a cut goes into the list this host keeps as well as into the page, or the
+        // next child adopted would be the one standing after the rest of the run.
+        cut(at: integer) =
+            val tail = splitText(node, at)
+
+            insert(list, index + 1, tail)
+
+            tail
+
+        { node: node, kind: nodeKind(node), tag: tagName(node), text: nodeText(node), split: cut }
 
     { element: element, text: text, setProps: setProps, setText: setNodeText,
       serialise: serialise, drop: drop, mounted: mounted, adopt: adopt,
@@ -397,6 +410,23 @@ pageValue(value) =
     if value == true || value == "" then return true
 
     string(value)
+
+// What the node would answer for a PROPERTY set to this value, `held` being what it answers now.
+//
+// **A PROPERTY HAS A TYPE OF ITS OWN AND THE PAGE NORMALISES TO IT**, which is the same fact
+// `pageValue` says about attributes wearing a different hat. `value` is a string whatever it is
+// given -- `value={5}` reads back `"5"` and a `null` reads back `""` -- and `checked` is a boolean.
+// What the node holds now is what says which of the two this is, so the value about to be written is
+// read the way the one already there was.
+pageProperty(held, value) =
+    if held is boolean then return value == true
+
+    if held is string
+        if value == null || value == undefined then return ""
+
+        return string(value)
+
+    value
 
 // -- the address bar ------------------------------------------------------------------------------
 
