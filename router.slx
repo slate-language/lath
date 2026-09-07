@@ -171,7 +171,7 @@ export val Anything = "*"
 // **A `:name` binds one segment and never a slash**, so `/notes/:id` does not match `/notes/1/edit`.
 // A template that wants the rest of a path ends in `"*"`, which is what `"/notes/:id/*"` and the
 // bare last case `"*"` both are.
-export matchPath(template: string, path: string) -> object =
+export matchPath(template: string, path: string) -> object | null =
     val m = matchRoute(template, path)
 
     if m == null then return null
@@ -184,7 +184,7 @@ export matchPath(template: string, path: string) -> object =
 // percent-encoded, because both of them are addresses again -- `base` is what a relative `Link` is
 // resolved against and `tail` is what a router below matches. A decoded segment put back into either
 // would be a different address the first time somebody's title had a slash in it.
-matchRoute(template: string, path: string) -> object =
+matchRoute(template: string, path: string) -> object | null =
     val want = segmentsOf(template)
     val got = segmentsOf(path)
 
