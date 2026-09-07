@@ -9,7 +9,7 @@ by key and moves them into place. That is React's model **and** React's mechanis
 The name is the strip a roof's slates are nailed to — the frame the pieces hang on.
 
 ```
-slate add github.com/slate-language/lath
+slate install github.com/slate-language/lath
 ```
 
 ```
@@ -539,7 +539,7 @@ with the very refusal that proves the DOM host is working. `tests-dom/setup.mjs`
 `--import` is for.
 
 **jsdom is a dev dependency of this repository and nothing else.** A program that *uses* lath never
-sees npm: `slate add github.com/slate-language/lath` fetches slate source, and `slate js` writes one
+sees npm: `slate install github.com/slate-language/lath` fetches slate source, and `slate js` writes one
 self-contained file. The `package.json` here exists so that the framework's own DOM half can be
 tested against somebody else's reading of the specification rather than against a fake document
 written beside it.
@@ -548,7 +548,7 @@ written beside it.
 
 slate **0.0.40** or newer as of lath 0.8.0, and `lath/dom` now depends on the
 [`dom`](https://github.com/slate-language/dom) package (**0.1.1** or newer) rather than the
-compiler's built-in `slate:dom` — `slate add github.com/slate-language/lath` pulls it in
+compiler's built-in `slate:dom` — `slate install github.com/slate-language/lath` pulls it in
 automatically, the same way it pulls in the rest of lath's own dependencies. A node is the element
 itself now, opaque and compared by identity, with no handle to give back — so this repository calls
 no `release()` any more, though the package still exports one as a no-op for consumers that have
