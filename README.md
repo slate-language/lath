@@ -546,6 +546,16 @@ written beside it.
 
 ## Requirements
 
+slate **0.0.40** or newer as of lath 0.8.0, and `lath/dom` now depends on the
+[`dom`](https://github.com/slate-language/dom) package (**0.1.1** or newer) rather than the
+compiler's built-in `slate:dom` — `slate add github.com/slate-language/lath` pulls it in
+automatically, the same way it pulls in the rest of lath's own dependencies. A node is the element
+itself now, opaque and compared by identity, with no handle to give back — so this repository calls
+no `release()` any more, though the package still exports one as a no-op for consumers that have
+not moved. The floor moved because a call now drops surplus arguments rather than faulting, which is
+what lets an ordinary `onClick={() -> setCount(count + 1)}` reach a handler the `dom` package calls
+with an event record it declares no parameter for.
+
 The [`dom`](https://github.com/slate-language/dom) package **0.1.0** or newer, and slate **0.0.39**
 or newer, since `lath/dom` moved off the compiler's own `slate:dom`. The two floors are one fact: a
 node is the element itself rather than a handle into a table, and an external hashes by the element

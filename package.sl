@@ -1,6 +1,6 @@
 {
     name: "lath",
-    version: "0.7.1",
+    version: "0.8.0",
 
     // What a bare `import ... from lath` reaches. The framework proper: elements, components,
     // hooks and the reconciler, and nothing that needs a browser.
@@ -29,6 +29,6 @@
     // bare `dom` at an import site is this package, and `lath/dom` is the module. The two live in
     // different namespaces and the compiler reads them apart.
     dependencies: {
-        dom: { git: "github.com/slate-language/dom", version: "0.1.0" },
+        dom: { git: "github.com/slate-language/dom", version: "0.1.1" },
     },
 }
