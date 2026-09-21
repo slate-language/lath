@@ -125,7 +125,7 @@ longestRun(pos: array) -> array =
         var hi = best.length - 1
 
         while lo < hi
-            val mid = (lo + hi) / 2
+            val mid = (lo + hi) \ 2
 
             if pos[best[mid]] < p then lo = mid + 1 else hi = mid
 
