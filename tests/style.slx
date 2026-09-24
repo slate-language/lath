@@ -87,7 +87,10 @@ TWO_DIFFERENT_SHEETS_ARE_TWO_IN_THE_ORDER_THEY_WERE_REGISTERED()
 
     // The shell renders before the component inside it, so its sheet is first -- which is what a
     // cascade needs, a component's rules being the more specific of the two.
-    assert(indexOf(out, theme) < indexOf(out, small))
+    val first = indexOf(out, theme)
+    val second = indexOf(out, small)
+
+    assert(first != null && second != null && first < second)
 
 @test
 A_SHEET_REGISTERED_ON_A_LATER_RENDER_ARRIVES_TOO()
