@@ -125,6 +125,34 @@ render the right thing to write: a list of fifty cards is one `<style>`.
 which is the point, a component that only sometimes renders the thing the sheet is about being the
 ordinary case.
 
+### An app's global css: a bare import
+
+**`import "./app.css"`, with no name, is all an app's own stylesheet needs.** slate collects every
+stylesheet a program bare-imports ([`slate:style`](https://github.com/slate-language/slate/blob/dev/docs/library/style.md)),
+and every root lath makes starts with them — the server writes them with the first render and a
+hydrating page finds them already there.
+
+```
+import "./app.css"
+import { createElement, mount, html, style } from lath
+import card from "./card.css"
+
+Card(props) =
+    style(card)
+
+    <div class="card">{props.children}</div>
+
+html(mount(<Card>hi</Card>))
+// <style data-lath-style>…app.css…</style><style data-lath-style>…card.css…</style><div class="card">hi</div>
+```
+
+**The cascade order is fixed: the bare sheets first, then every `style(css)` sheet.** The bare ones
+keep the order the program met them in, each file once however many modules import it; the
+component ones keep the order they were registered. So a component's own rule beats the app's
+global one at equal specificity — the global css is the general rule and the component's is the
+specific one. A component that also calls `style` with a bare sheet's text changes nothing: it is
+the same sheet, already first. A program with no bare imports renders exactly as it always has.
+
 **Where it lands depends on the host, and the two answers are the two places a stylesheet can go.**
 
 | | |
@@ -149,7 +177,8 @@ page's stylesheets grow to the set of components it has rendered and stop there.
 
 **Two things are refused.** A sheet that is not text — which is a mistake about the import, and the
 fault says so rather than complaining about a string three lines later. And a sheet containing
-`</style`, which is the one string that could end the element it is written in: the css is written
+`</style` — whether registered with `style` or bare-imported, the latter refused when a root is
+made — which is the one string that could end the element it is written in: the css is written
 raw, because a `>` in a child selector and an `&` in a `content:` string are ordinary css and both
 would break if the text were escaped.
 
@@ -610,6 +639,9 @@ tested against somebody else's reading of the specification rather than against 
 written beside it.
 
 ## Requirements
+
+slate **0.2.1** or newer, for **`slate:style`**: `sheets()` is how every root starts with the
+program's bare-imported stylesheets.
 
 The [`dom`](https://github.com/slate-language/dom) package **0.1.1** or newer as of lath 0.9.0, for
 five names the DOM host and its tests now stand on: **`property`**, the reader that lets `value` and

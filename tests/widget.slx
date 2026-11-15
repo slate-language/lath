@@ -1,0 +1,12 @@
+// A second module that bare-imports the same stylesheet `tests/sheets.slx` does -- which is what a
+// program with a shared `app.css` looks like, and what `sheets()` has to answer with ONE copy of.
+
+import "./app.css"
+import { createElement, style } from "../lath.slx"
+
+export val widgetCss = ".bare-widget { color: rgb(20, 20, 20); }"
+
+export Widget(props: object) =
+    style(widgetCss)
+
+    <p class="bare-widget">widget</p>

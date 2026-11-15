@@ -1,0 +1,115 @@
+import "./app.css"
+import "./global.css"
+import { createElement, Fragment, mount, html, flush, style, useState } from "../lath.slx"
+import { Widget, widgetCss } from "./widget.slx"
+import app from "./app.css"
+import global from "./global.css"
+import { sheets } from slate:style
+
+// The stylesheets a program bare-imports -- `import "./app.css"` -- and where they land.
+//
+// **THE CASCADE ORDER IS THE THING UNDER TEST: the bare sheets first, in `sheets()` order, then every
+// sheet a component registered, in the order it registered.** An app's global css is the general
+// rule and a component's own sheet the specific one, so the component has to come after to win a tie.
+//
+// **This file is its own program**, which is what lets it have bare imports while `tests/style.slx`
+// has none: `sheets()` answers for the program, and that file is the proof that an app without any
+// renders exactly as it did before there were bare imports.
+
+countOf(s: string, sub: string) -> integer =
+    var found = 0
+    var from = 0
+
+    while true
+        val at = indexOf(s[from..], sub)
+
+        if at == null then break
+
+        found = found + 1
+        from = from + at + sub.length
+
+    found
+
+tag(css: string) -> string = "<style data-lath-style>" + css + "</style>"
+
+@test
+THE_PROGRAMS_BARE_SHEETS_ARE_THE_TWO_FILES_ONCE_EACH()
+    // **`widget.slx` imports `app.css` too, and it is still one sheet**: slate's answer, checked here
+    // because everything below leans on it.
+    assertEq(sheets(), [app, global])
+
+@test
+BARE_SHEETS_COME_FIRST_THEN_A_COMPONENTS_OWN()
+    val out = html(mount(<Widget/>))
+
+    assertEq(out, tag(app) + tag(global) + tag(widgetCss) + "<p class=\"bare-widget\">widget</p>")
+
+@test
+AN_APP_WITH_NO_COMPONENT_SHEETS_STILL_GETS_ITS_BARE_ONES()
+    // **Nothing has to ask for them.** An app that never calls `style` gets its global css from the
+    // import alone, which is the whole of the feature.
+    Plain(props: object) = <main>plain</main>
+
+    assertEq(html(mount(<Plain/>)), tag(app) + tag(global) + "<main>plain</main>")
+
+@test
+A_BARE_SHEET_IMPORTED_FROM_TWO_MODULES_IS_ONE_STYLE_ELEMENT()
+    val out = html(mount(<><Widget/><Widget/></>))
+
+    assertEq(countOf(out, app), 1)
+    assertEq(countOf(out, "<style"), 3)
+
+@test
+A_COMPONENT_REGISTERING_A_BARE_SHEET_AGAIN_NEITHER_DUPLICATES_NOR_MOVES_IT()
+    // `style` deduplicates by the css itself, and the bare sheet is already in the list -- at the
+    // front, where it stays.
+    Again(props: object) =
+        style(widgetCss)
+        style(app)
+
+        <p>again</p>
+
+    assertEq(html(mount(<Again/>)), tag(app) + tag(global) + tag(widgetCss) + "<p>again</p>")
+
+@test
+A_TREE_WITH_A_HEAD_GETS_BARE_SHEETS_FIRST_AT_THE_END_OF_IT()
+    Doc(props: object) =
+        style(widgetCss)
+
+        <html><head><title>t</title></head><body>b</body></html>
+
+    val out = html(mount(<Doc/>))
+
+    assertEq(out, "<html><head><title>t</title>" + tag(app) + tag(global) + tag(widgetCss)
+        + "</head><body>b</body></html>")
+
+@test
+A_SHEET_A_LATER_RENDER_REGISTERS_GOES_AFTER_THE_BARE_ONES()
+    var setter = null
+
+    App(props: object) =
+        val [open, setOpen] = useState(false)
+
+        setter = setOpen
+
+        <div>{if open then <Widget/> else null}</div>
+
+    val root = mount(<App/>)
+
+    // The bare sheets are there from the very first render, before any component asked for anything.
+    assertEq(html(root), tag(app) + tag(global) + "<div></div>")
+
+    setter(true)
+    flush(root)
+
+    assertEq(html(root), tag(app) + tag(global) + tag(widgetCss)
+        + "<div><p class=\"bare-widget\">widget</p></div>")
+
+@test
+TWO_ROOTS_EACH_GET_THE_BARE_SHEETS()
+    // **Each root starts with them**, so a server rendering one page per request writes them on
+    // every page and not only the first.
+    Plain(props: object) = <i>x</i>
+
+    assertEq(html(mount(<Plain/>)), html(mount(<Plain/>)))
+    assertEq(countOf(html(mount(<Plain/>)), app), 1)

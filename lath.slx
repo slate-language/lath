@@ -16,6 +16,7 @@
 import { patchKids } from "./reconcile.slx"
 import { hostElement, hostText, hostSetProps, hostSetText, serialiseNodes, hostDrop, hostMounted,
     hostAdopt, hostPatch } from "./markup.slx"
+import { sheets as bareSheets } from slate:style
 
 // -- elements --------------------------------------------------------------------------------
 
@@ -181,6 +182,10 @@ export useEffect(run: function, deps = null) =
 // render the right thing to write: a component that renders fifty times, and fifty components that
 // import the same file, are one `<style>`.
 //
+// **A sheet registered here comes AFTER the program's bare-imported ones** (`startingSheets` below),
+// which every root starts with: the app's global css first, a component's own after it, so the
+// component's rule wins a tie.
+//
 // **The two hosts put it in the two places a sheet can go.** `html(root)` writes one `<style>` per
 // sheet — at the end of the `<head>` where the tree has one, and in front of the markup where it is
 // a fragment. A page injects one `<style>` per sheet into the document's head, once.
@@ -207,18 +212,43 @@ export style(css) =
     if rendering == null
         throw "style is called while a component renders, and nothing is rendering"
 
-    // **`</style` is refused rather than escaped**, which is the whole of what makes writing the css
-    // raw safe: a `<style>` element's content is raw text and that is the one string that can end it
-    // early. Escaping instead would break a `&` in a `content:` string and a `<` in a selector.
-    // **`indexOf` and not `contains`**, this file having a `contains` of its own that takes an array.
-    if indexOf(css.lower(), "</style") != null
-        throw "a stylesheet may not contain \"</style\", which would end the element it is written in"
+    refuseEnding(css)
 
     val root = rendering.root
 
     if root.sheets.indexOf(css) == null then push(root.sheets, css)
 
     null
+
+// **`</style` is refused rather than escaped**, which is the whole of what makes writing the css raw
+// safe: a `<style>` element's content is raw text and that is the one string that can end it early.
+// Escaping instead would break a `&` in a `content:` string and a `<` in a selector.
+// **`indexOf` and not `contains`**, this file having a `contains` of its own that takes an array.
+refuseEnding(css: string) =
+    if indexOf(css.lower(), "</style") != null
+        throw "a stylesheet may not contain \"</style\", which would end the element it is written in"
+
+    null
+
+// The stylesheets the program bare-imported -- `import "./app.css"` -- which every root starts with.
+//
+// **They come FIRST, ahead of every sheet a component registers**, and that order is the cascade's:
+// an app's global css is the general rule and a component's own sheet is the specific one, so a
+// component's rules win where the two say different things at equal specificity. Among themselves
+// they keep `sheets()`'s order, which is the order the program met them.
+//
+// **They are seeded into the root rather than registered by anything**, because slate knows the whole
+// set before the program runs: nothing has to remember to ask for them, the server writes them with
+// the first render, and a hydrating page finds them already there -- the same list, the same order,
+// so the host compares and writes nothing. A program with none starts with an empty list, which is
+// exactly the root it started with before there were bare imports.
+startingSheets() -> array =
+    val found = bareSheets()
+
+    for css in found
+        refuseEnding(css)
+
+    found
 
 // The sheets registered so far, handed to the host whenever that list grows.
 //
@@ -855,7 +885,7 @@ newRoot(host) -> object =
     mismatching = false
 
     { host: host, inst: null, pending: [], effects: [], scheduled: false, claim: null, trail: [],
-      nodes: [], dropped: [], sheets: [], styled: [] }
+      nodes: [], dropped: [], sheets: startingSheets(), styled: [] }
 
 // The rendered tree as text, which is what the string host is for.
 export html(root: object) -> string = root.host.serialise(nodesOf(root.inst))

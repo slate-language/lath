@@ -1,0 +1,21 @@
+import "./ending.css"
+import { createElement, mount } from "../lath.slx"
+
+// A bare-imported stylesheet containing `</style` -- refused as `style(css)` refuses one, because it
+// is written into the same raw-text `<style>` element and would end it early.
+//
+// **Its own program**, a bare import being the whole program's: every root this file made would
+// fault, which is the point and is why nothing else lives here.
+
+@test
+A_BARE_SHEET_THAT_WOULD_END_ITS_ELEMENT_IS_REFUSED_WHEN_A_ROOT_IS_MADE()
+    Plain(props: object) = <p>never</p>
+
+    var said = ""
+
+    try
+        mount(<Plain/>)
+    catch e
+        said = e.message
+
+    assertEq(said, "a stylesheet may not contain \"</style\", which would end the element it is written in")

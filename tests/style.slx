@@ -232,3 +232,28 @@ A_RENDER_THAT_FAULTED_DOES_NOT_LEAVE_THE_FRAMEWORK_MID_RENDER()
 
     assert(contains(fell(() -> mount(<Broken/>)), "on purpose"))
     assert(contains(fell(() -> style(small)), "nothing is rendering"))
+
+@test
+A_PROGRAM_WITH_NO_BARE_SHEETS_RENDERS_EXACTLY_AS_BEFORE_THERE_WERE_ANY()
+    // **The whole markup, byte for byte**, against what lath wrote before the bare imports of
+    // `tests/sheets.slx` existed: this file bare-imports nothing, so `sheets()` is empty and the root
+    // starts with no sheets -- the same `<style>` elements, in the same order, in the same places,
+    // and nothing written on a render that registered none.
+    Shell(props: object) =
+        style(theme)
+
+        <><Small/><Card title="c"/></>
+
+    assertEq(html(mount(<Shell/>)), "<style data-lath-style>" + theme + "</style><style data-lath-style>"
+        + small + "</style><style data-lath-style>" + card + "</style><p class=\"a\">small</p>"
+        + "<div class=\"lath-card\"><h2>c</h2></div>")
+
+    Page(props: object) =
+        <html><head><title>p</title></head><body><Small/></body></html>
+
+    assertEq(html(mount(<Page/>)), "<html><head><title>p</title><style data-lath-style>" + small
+        + "</style></head><body><p class=\"a\">small</p></body></html>")
+
+    Bare(props: object) = <p>none</p>
+
+    assertEq(html(mount(<Bare/>)), "<p>none</p>")
