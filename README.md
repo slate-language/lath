@@ -695,7 +695,7 @@ written beside it.
 
 ## Requirements
 
-slate **0.2.1** or newer, for **`slate:style`**: `sheets()` is how every root starts with the
+slate **0.2.1** or newer as of lath 0.11.0, for **`slate:style`**: `sheets()` is how every root starts with the
 program's bare-imported stylesheets.
 
 The [`dom`](https://github.com/slate-language/dom) package **0.1.1** or newer as of lath 0.9.0, for
