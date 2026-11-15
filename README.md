@@ -630,6 +630,8 @@ inventing a foreign value, so `dom` builds an object at the moment the handler f
 | `mods` | `{ meta, ctrl, shift, alt }` — which modifiers were down |
 | `button` | `0` left, `1` middle, `2` right, or `null` for a non-mouse event |
 | `stop()`, `prevent()` | `stopPropagation` and `preventDefault` |
+| `target` | the node the event originated on |
+| `closest(selector)` | the nearest ancestor-or-self of `target` matching `selector`, or `null` |
 
 **`mods` and `button` were added to `slate:dom` for `Link`**, and they are what a link cannot be
 written without: a router that intercepted every click would swallow cmd-click, shift-click and
@@ -697,6 +699,9 @@ written beside it.
 
 slate **0.2.1** or newer as of lath 0.11.0, for **`slate:style`**: `sheets()` is how every root starts with the
 program's bare-imported stylesheets.
+
+The [`dom`](https://github.com/slate-language/dom) package **0.2.0** or newer as of lath 0.11.1, which
+adds `target` and `closest` to the event record a handler is given.
 
 The [`dom`](https://github.com/slate-language/dom) package **0.1.1** or newer as of lath 0.9.0, for
 five names the DOM host and its tests now stand on: **`property`**, the reader that lets `value` and
