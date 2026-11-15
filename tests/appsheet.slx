@@ -1,0 +1,130 @@
+import "./app.css"
+import "./global.css"
+import "./note.css"
+import { createElement, Fragment, mount, html, flush, style, useState, appSheet, serveAppSheet } from "../lath.slx"
+import { Widget, widgetCss } from "./widget.slx"
+import app from "./app.css"
+import global from "./global.css"
+import note from "./note.css"
+import { sha256 } from slate:crypto
+import { base64urlEncode } from slate:url
+
+// The bare sheets served as ONE file -- `serveAppSheet()` -- and the `<link>` that stands where their
+// `<style>` elements stood.
+//
+// **Its own program, and every test here runs with the `<link>` on**: `serveAppSheet` turns it on for
+// the program and never off, which is the design. `tests/sheets.slx` is the same bare sheets with it
+// never called, and says nothing changed there.
+//
+// **The hash is pinned as a literal**, and that is the test that matters most: this file runs under
+// the interpreter AND under `slate js`, so one literal passing on both is the server and the page
+// agreeing about the address with nothing sent between them.
+
+val Pinned = "GDQ0cyqJKXBl"
+
+link() -> string = "<link rel=\"stylesheet\" href=\"/assets/app." + Pinned + ".css\" data-lath-style>"
+
+tag(css: string) -> string = "<style data-lath-style>" + css + "</style>"
+
+@test
+THE_APP_SHEET_IS_THE_BARE_SHEETS_IN_ORDER_JOINED_BY_A_NEWLINE()
+    val sheet = serveAppSheet()
+
+    assertEq(sheet.css, app + "\n" + global + "\n" + note)
+    assertEq(sheet.type, "text/css; charset=utf-8")
+
+@test
+ITS_HASH_IS_THE_CONTENTS_AND_IS_THE_SAME_EVERY_TIME_IT_IS_ASKED()
+    val sheet = serveAppSheet()
+
+    assertEq(sheet.hash, Pinned)
+    assertEq(sheet.hash, base64urlEncode(sha256(sheet.css)[0..<9]))
+    assertEq(appSheet().hash, sheet.hash)
+    assertEq(sheet.path, "/assets/app." + Pinned + ".css")
+
+@test
+THE_HASH_IS_TWELVE_CHARACTERS_SAFE_IN_A_FILE_NAME_AND_A_URL()
+    val hash = serveAppSheet().hash
+
+    assertEq(hash.length, 12)
+
+    for c in hash.chars()
+        assert(contains("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_", c), c)
+
+@test
+THE_LINK_STANDS_WHERE_THE_BARE_STYLES_DID_AHEAD_OF_A_COMPONENTS_OWN()
+    serveAppSheet()
+
+    assertEq(html(mount(<Widget/>)), link() + tag(widgetCss) + "<p class=\"bare-widget\">widget</p>")
+
+@test
+AN_APP_WITH_NO_COMPONENT_SHEETS_IS_ONE_LINK_AND_ITS_MARKUP()
+    serveAppSheet()
+
+    Plain(props: object) = <main>plain</main>
+
+    assertEq(html(mount(<Plain/>)), link() + "<main>plain</main>")
+
+@test
+A_TREE_WITH_A_HEAD_GETS_THE_LINK_FIRST_AT_THE_END_OF_IT()
+    serveAppSheet()
+
+    Doc(props: object) =
+        style(widgetCss)
+
+        <html><head><title>t</title></head><body>b</body></html>
+
+    assertEq(html(mount(<Doc/>)), "<html><head><title>t</title>" + link() + tag(widgetCss)
+        + "</head><body>b</body></html>")
+
+@test
+A_COMPONENT_REGISTERING_A_BARE_SHEET_AGAIN_ADDS_NO_STYLE_FOR_IT()
+    // The bare sheet is the link's now, and `style` deduplicating by the text keeps it there rather
+    // than writing it inline a second time.
+    serveAppSheet()
+
+    Again(props: object) =
+        style(widgetCss)
+        style(global)
+
+        <p>again</p>
+
+    assertEq(html(mount(<Again/>)), link() + tag(widgetCss) + "<p>again</p>")
+
+@test
+A_SHEET_A_LATER_RENDER_REGISTERS_GOES_AFTER_THE_LINK()
+    serveAppSheet()
+
+    var setter = null
+
+    App(props: object) =
+        val [open, setOpen] = useState(false)
+
+        setter = setOpen
+
+        <div>{if open then <Widget/> else null}</div>
+
+    val root = mount(<App/>)
+
+    assertEq(html(root), link() + "<div></div>")
+
+    setter(true)
+    flush(root)
+
+    assertEq(html(root), link() + tag(widgetCss) + "<div><p class=\"bare-widget\">widget</p></div>")
+
+@test
+NO_BARE_SHEET_TEXT_IS_WRITTEN_INTO_THE_PAGE()
+    serveAppSheet()
+
+    val out = html(mount(<><Widget/><Widget/></>))
+
+    assert(!contains(out, app))
+    assert(!contains(out, global))
+    assertEq(out.split("<link").length, 2, "one link however many components import the sheet")
+
+@test
+A_COMMENT_MENTIONING_AN_IMPORT_IS_NOT_ONE()
+    // `note.css` is in second place and its first line is a comment saying `@import`; only a sheet
+    // whose first STATEMENT is an `@import` is refused.
+    assert(contains(serveAppSheet().css, note))

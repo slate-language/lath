@@ -1,0 +1,199 @@
+import "./appsheet-dom.css"
+import { createElement, Fragment, mount, hydrate, html, flush, style, useState, appSheet, serveAppSheet } from "../lath.slx"
+import { domHost } from "../dom.slx"
+import { createElement as element, setAttribute, insertBefore, removeChild, query } from dom
+import { at, shown, inHead, mutations } from "./probe.slx"
+import bare from "./appsheet-dom.css"
+
+// The app sheet against a real document: a server serving the bare sheets as a file writes ONE
+// `<link>` where their `<style>` elements stood, and a hydrating page has to recognise it AS those
+// sheets -- working out the same address from the same `sheets()` text -- and make no mutation.
+//
+// **Its own program**, with the `<link>` on for every test, `serveAppSheet` turning it on for good.
+// The document is shared with every other file here, so a test that puts something in the head takes
+// it out again.
+
+countOf(s: string, sub: string) -> integer =
+    var found = 0
+    var from = 0
+
+    while true
+        val at = indexOf(s[from..], sub)
+
+        if at == null then break
+
+        found = found + 1
+        from = from + at + sub.length
+
+    found
+
+before(s: string, a: string, b: string) -> boolean =
+    val x = indexOf(s, a)
+    val y = indexOf(s, b)
+
+    x != null && y != null && x < y
+
+// A `<link data-lath-style>` put in the head, as a server that rendered a whole document would have.
+headLink(href: string) =
+    val tag = element("link")
+
+    setAttribute(tag, "rel", "stylesheet")
+    setAttribute(tag, "href", href)
+    setAttribute(tag, "data-lath-style", true)
+    insertBefore(query("head"), tag, null)
+
+    tag
+
+@test
+async A_HYDRATED_PAGE_TAKES_THE_LINK_FOR_THE_BARE_SHEETS_AND_RECORDS_NOTHING()
+    val path = serveAppSheet().path
+    val own = ".dom-app-card { color: rgb(41, 41, 41); }"
+
+    Card(props: object) =
+        style(own)
+
+        <p id="app-card">a card</p>
+
+    val sent = html(mount(<Card/>))
+
+    assert(before(sent, path, own))
+    assert(!contains(sent, bare))
+
+    at(sent)
+
+    await sleep(1)
+
+    val records = mutations()
+
+    hydrate(<Card/>, domHost("#page"))
+
+    await sleep(1)
+
+    assertEq(mutations() - records, 0)
+
+    assertEq(countOf(shown(), path), 1)
+    assertEq(countOf(shown(), own), 1)
+    assert(before(shown(), path, own))
+    assert(!contains(shown(), bare))
+
+    assertEq(countOf(inHead(), bare), 0)
+    assertEq(countOf(inHead(), own), 0)
+
+@test
+async THE_LINK_STAYS_FIRST_ACROSS_A_LATER_CHANGE_TO_THE_TOP_OF_THE_TREE()
+    val path = serveAppSheet().path
+    val own = ".dom-app-shell { color: rgb(42, 42, 42); }"
+    val later = ".dom-app-later { color: rgb(43, 43, 43); }"
+
+    var setter = null
+
+    Shell(props: object) =
+        val [more, setMore] = useState(false)
+
+        setter = setMore
+
+        style(own)
+
+        if more then style(later)
+
+        <>
+            <p id="app-kept">kept</p>
+            {more && <p id="app-extra">extra</p>}
+        </>
+
+    at(html(mount(<Shell/>)))
+
+    val root = hydrate(<Shell/>, domHost("#page"))
+
+    setter(true)
+    flush(root)
+
+    await sleep(1)
+
+    assertEq(countOf(shown(), path), 1)
+    assert(before(shown(), path, own))
+    assert(contains(shown(), "id=\"app-extra\""))
+
+    // The sheet first registered after hydration goes to the head, as any new one does; the bare one
+    // the link already carries is not written anywhere.
+    assertEq(countOf(inHead(), later), 1)
+    assertEq(countOf(inHead(), bare), 0)
+    assert(!contains(shown(), bare))
+
+@test
+async A_LINK_CARRYING_A_CACHE_BUSTER_IS_STILL_THE_APP_SHEET()
+    // `slate dev`'s stylesheet swap re-points a `<link>` at an absolute URL with `?__slate=<time>` on
+    // the end; a render
+    // after a swap must not take that for a page that forgot its sheets.
+    val path = serveAppSheet().path
+
+    Plain(props: object) = <p id="app-busted">busted</p>
+
+    val sent = html(mount(<Plain/>)).replace(path, "http://127.0.0.1:3000" + path + "?__slate=1731628800000")
+
+    at(sent)
+
+    await sleep(1)
+
+    val records = mutations()
+
+    hydrate(<Plain/>, domHost("#page"))
+
+    await sleep(1)
+
+    assertEq(mutations() - records, 0)
+    assertEq(countOf(inHead(), bare), 0)
+
+@test
+async A_LINK_TO_SOME_OTHER_ADDRESS_IS_NOT_THE_BARE_SHEETS_AND_THEY_ARE_WRITTEN()
+    // A server serving a STALE app sheet -- its address names other text -- is a server that forgot
+    // these sheets, and the page puts them in, which is a mutation and the right answer.
+    val path = serveAppSheet().path
+
+    Plain(props: object) = <p id="app-stale">stale</p>
+
+    val sent = html(mount(<Plain/>)).replace(path, "/assets/app.AAAAAAAAAAAA.css")
+
+    at(sent)
+
+    hydrate(<Plain/>, domHost("#page"))
+
+    await sleep(1)
+
+    assertEq(countOf(inHead(), bare), 1)
+
+    // Taken back out, the document being every file's.
+    removeChild(query("head"), query("head > style[data-lath-style]:last-of-type"))
+
+    assertEq(countOf(inHead(), bare), 0)
+
+@test
+A_LINK_IN_THE_HEAD_IS_THE_BARE_SHEETS_TOO()
+    // **A server that rendered a whole document puts the link at the end of its head**, and a page
+    // mounted under that head finds its bare sheets already there.
+    val tag = headLink(serveAppSheet().path)
+
+    Fresh(props: object) = <p id="app-fresh">fresh</p>
+
+    at("")
+    mount(<Fresh/>, domHost("#page"))
+
+    assertEq(countOf(inHead(), bare), 0)
+    assert(!contains(shown(), "<style"))
+
+    removeChild(query("head"), tag)
+
+@test
+A_FRESH_MOUNT_WITH_NO_LINK_ANYWHERE_WRITES_THE_BARE_SHEET_INTO_THE_HEAD()
+    // **The link is the SERVER's answer**; a page that was never served one -- a client-only mount --
+    // gets the sheet as a `<style>`, exactly as it did before there was an app sheet.
+    serveAppSheet()
+
+    Fresh(props: object) = <p id="app-alone">alone</p>
+
+    at("")
+    mount(<Fresh/>, domHost("#page"))
+
+    assertEq(countOf(inHead(), bare), 1)
+
+    removeChild(query("head"), query("head > style[data-lath-style]:last-of-type"))

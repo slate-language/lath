@@ -1,6 +1,6 @@
 import "./app.css"
 import "./global.css"
-import { createElement, Fragment, mount, html, flush, style, useState } from "../lath.slx"
+import { createElement, Fragment, mount, html, flush, style, useState, appSheet } from "../lath.slx"
 import { Widget, widgetCss } from "./widget.slx"
 import app from "./app.css"
 import global from "./global.css"
@@ -104,6 +104,25 @@ A_SHEET_A_LATER_RENDER_REGISTERS_GOES_AFTER_THE_BARE_ONES()
 
     assertEq(html(root), tag(app) + tag(global) + tag(widgetCss)
         + "<div><p class=\"bare-widget\">widget</p></div>")
+
+@test
+ASKING_WHAT_THE_APP_SHEET_IS_DOES_NOT_TURN_THE_LINK_ON()
+    // **Only `serveAppSheet` does**, so a program that never wires the route -- which is every
+    // program written before there was one -- keeps its `<style>` elements. `appSheet` is what a page
+    // asks to recognise the `<link>`, and asking must change nothing.
+    val sheet = appSheet()
+
+    assertEq(sheet.css, app + "\n" + global)
+
+    // **One sheet fewer than `tests/appsheet.slx` and so a different address**: that file's three
+    // sheets hash to `GDQ0cyqJKXBl`, and a change to the text is a change to the name.
+    assert(sheet.hash != "GDQ0cyqJKXBl")
+    assertEq(sheet.hash.length, 12)
+
+    Plain(props: object) = <main>plain</main>
+
+    assertEq(html(mount(<Plain/>)), tag(app) + tag(global) + "<main>plain</main>")
+    assert(!contains(html(mount(<Widget/>)), "<link"))
 
 @test
 TWO_ROOTS_EACH_GET_THE_BARE_SHEETS()

@@ -1,0 +1,2 @@
+/* This sheet mentions @import only inside a comment, and in second place that is no @import at all. */
+.bare-note { padding: 0; }

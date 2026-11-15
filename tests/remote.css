@@ -1,0 +1,4 @@
+/* A font service's stylesheet, which slate leaves as written because it is not relative. */
+@import url("https://fonts.example.com/css?family=Plain");
+
+.bare-remote { font-family: Plain, sans-serif; }

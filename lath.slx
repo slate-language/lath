@@ -17,6 +17,8 @@ import { patchKids } from "./reconcile.slx"
 import { hostElement, hostText, hostSetProps, hostSetText, serialiseNodes, hostDrop, hostMounted,
     hostAdopt, hostPatch } from "./markup.slx"
 import { sheets as bareSheets } from slate:style
+import { sha256 } from slate:crypto
+import { base64urlEncode } from slate:url
 
 // -- elements --------------------------------------------------------------------------------
 
@@ -249,6 +251,93 @@ startingSheets() -> array =
         refuseEnding(css)
 
     found
+
+// -- the app sheet: the bare sheets as one file a server serves --------------------------------
+
+// `appSheet()` -- the program's bare-imported stylesheets as ONE file: `{ css, hash, path, type }`.
+//
+// **`css` is the sheets in `sheets()` order, joined by a newline**, which is the cascade the separate
+// `<style>` elements gave: one sheet after another, nothing between them. `hash` is the first nine
+// bytes of the SHA-256 of that text in base64url -- twelve characters, every one of them safe in a
+// file name and a URL -- so `path`, `/assets/app.<hash>.css`, names this exact text and nothing else.
+// That is what lets a server tell a browser to keep it for a year: a changed sheet is a new address.
+//
+// **It is the same answer on both sides of the page**, which is the point of it being here: a server
+// works it out to serve the file and write the `<link>`, and a hydrating page works it out to know
+// that the `<link>` it finds IS the bare sheets -- `slate js` puts the same `sheets()` text in the
+// bundle, so the two hashes agree with nothing sent between them.
+//
+// **A program with no bare sheets still has one, and its `css` is empty**; nothing writes a `<link>`
+// to it, so a route serving it is harmless rather than a broken page.
+//
+// **An `@import` at the top of any sheet but the first is refused.** slate inlines a relative one, so
+// what is left is an absolute one (`https:`, `/…`), and a browser honours an `@import` only ahead of
+// every rule in its FILE -- joined after another sheet's rules it would be silently ignored, and the
+// page would lose a stylesheet it had as separate `<style>` elements.
+export appSheet() -> object =
+    if madeSheet == null then madeSheet = sheetFrom(startingSheets())
+
+    madeSheet
+
+// `serveAppSheet()` -- `appSheet()`, and from now on every page the string host writes carries
+// `<link rel="stylesheet" href="/assets/app.<hash>.css">` where the bare `<style>` elements were.
+//
+// **Asking for the file is what turns the `<link>` on**, so the two cannot be had apart: the program
+// that calls this is the one that has the text to serve, and a program that never calls it renders
+// exactly as it always has. The app writes the route -- `app.get(sheet.path, asset(sheet.css,
+// sheet.type))` with `sluice` -- and lath never learns what is serving it.
+//
+// **The `<link>` stands where the first bare `<style>` stood**, so the cascade is unchanged: the app
+// sheet, then every `style(css)` sheet in the order it was registered. A program with no bare sheets
+// gets no `<link>` and its markup is unchanged byte for byte.
+export serveAppSheet() -> object =
+    val sheet = appSheet()
+
+    linking = true
+
+    sheet
+
+// Whether `serveAppSheet` has been called. **Once per program and never taken back**, because a
+// server that started serving the file has no reason to stop, and a page half written each way would
+// be two pages.
+var linking = false
+
+var madeSheet = null
+
+sheetFrom(found: array) -> object =
+    for i in 1..<found.length
+        if leadsWithImport(found[i])
+            throw "the bare stylesheets are served as one file, and the one at position " + string(i) + " in `sheets()` starts with an `@import`, which a browser ignores after another sheet's rules -- move that `@import` into the first sheet the program imports"
+
+    val css = found.join("\n")
+    val hash = base64urlEncode(sha256(css)[0..<9])
+
+    { css: css, hash: hash, path: "/assets/app." + hash + ".css", type: "text/css; charset=utf-8" }
+
+// Whether a sheet's first statement is an `@import`, past any whitespace and comments.
+leadsWithImport(css: string) -> boolean =
+    var rest = css.trimStart()
+
+    while rest.startsWith("/*")
+        val end = indexOf(rest, "*/")
+
+        if end == null then return false
+
+        rest = rest[end + 2..].trimStart()
+
+    rest.lower().startsWith("@import")
+
+// What the string host writes in place of the bare `<style>` elements, or `null` for the ordinary
+// markup. The count is how many of a root's sheets are the bare ones, which is always its first ones
+// -- `newRoot` puts them there.
+linkedSheet() =
+    if !linking then return null
+
+    val count = bareSheets().length
+
+    if count == 0 then return null
+
+    { href: appSheet().path, count: count }
 
 // The sheets registered so far, handed to the host whenever that list grows.
 //
@@ -1580,7 +1669,8 @@ export stringHost() -> Host =
 
     // **The sheets are part of the markup**, which is the string host's whole answer to where a
     // stylesheet goes: a server's job is to send a page, and a page's `<style>` is in the page.
-    serialise(nodes: array) -> string = serialiseNodes(nodes, sheets)
+    // The bare ones are one `<link>` where the program serves them as a file (`serveAppSheet`).
+    serialise(nodes: array) -> string = serialiseNodes(nodes, sheets, linkedSheet())
 
     { element: hostElement, text: hostText, setProps: hostSetProps,
       setText: hostSetText, serialise: serialise, drop: hostDrop, mounted: hostMounted,

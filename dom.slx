@@ -15,7 +15,8 @@ import { createElement, createText, setAttribute, removeAttribute, setProperty, 
 import { insertBefore, removeChild } from dom
 import { children, tagName, nodeText, attribute, property, nodeKind, splitText } from dom
 import { location, pushPath, replacePath, onNavigate } from dom
-import { Host, useState, useEffect } from "./lath.slx"
+import { Host, useState, useEffect, appSheet } from "./lath.slx"
+import { sheets as bareSheets } from slate:style
 import { navigatesWith, addressIs, addressWith, ownsNavigation } from "./router.slx"
 
 // A host over one element of the page.
@@ -208,8 +209,11 @@ export domHost(into: string) -> Host =
     // **Only the LEADING ones**, which is where `html(root)` puts them and is what keeps a `<style>`
     // a component rendered for itself out of this: that one is part of the tree, is adopted like any
     // other element, and would be claimed by the render that produced it.
+    //
+    // **A `<link data-lath-style>` is one of them**: the app sheet, written where the program serves
+    // its bare sheets as a file (`serveAppSheet`).
     claimSheets(list: array) =
-        while list.length > 0 && tagName(list[0]) == "style" && attribute(list[0], "data-lath-style") != null
+        while list.length > 0 && isSheet(list[0])
             push(own, list[0])
             removeAt(list, 0)
 
@@ -218,23 +222,43 @@ export domHost(into: string) -> Host =
     // Every stylesheet the page already carries, as text: the ones in the head, and the ones a
     // server wrote in front of the markup inside this container.
     sheetsPresent() -> array =
-        var found = sheetsInHead()
-
-        for node in own
-            push(found, nodeText(node))
-
-        found
-
-    // What the head already holds, as text. **Nothing is kept**, this being a walk of markup nobody
-    // rendered: the elements are read for their text and let go of.
-    sheetsInHead() -> array =
         var found = []
 
         for kid in children(head)
-            if tagName(kid) == "style" && attribute(kid, "data-lath-style") != null
-                push(found, nodeText(kid))
+            if isSheet(kid) then readSheet(found, kid)
+
+        for node in own
+            readSheet(found, node)
 
         found
+
+    // A sheet's text onto `found`. **A `<link>` is the bare sheets, every one of them, where its
+    // address is the app sheet's** -- worked out here from the same `sheets()` text the server had,
+    // so the two agree without a word sent between them, and the hydrating commit finds the bare
+    // sheets present and writes nothing. A `<link>` to anything else is a sheet this host knows
+    // nothing about and counts as none, so a page whose server is serving OTHER css gets the bare
+    // sheets written as `<style>`, which is the right answer to a server that forgot them.
+    //
+    // **The address is compared without its query and by its PATH**, `slate dev`'s stylesheet swap
+    // writing a `<link>` it replaces back as an absolute URL with a cache-buster on the end.
+    readSheet(found: array, node) =
+        if tagName(node) == "style"
+            push(found, nodeText(node))
+
+            return null
+
+        val href = (attribute(node, "href") ?? "").split("?")[0]
+
+        if bareSheets().length > 0 && href.endsWith(appSheet().path)
+            for css in bareSheets()
+                push(found, css)
+
+        null
+
+    isSheet(node) -> boolean =
+        val tag = tagName(node)
+
+        (tag == "style" || tag == "link") && attribute(node, "data-lath-style") != null
 
     setNodeText(node: external, s: string) =
         if nodeText(node) != s then setText(node, s)

@@ -1,0 +1,40 @@
+import { createElement, mount, html, style, serveAppSheet } from "../lath.slx"
+import card from "./card.css"
+import { sha256 } from slate:crypto
+import { base64urlEncode } from slate:url
+
+// `serveAppSheet()` in a program with NO bare sheets: there is nothing to link, so every page is
+// exactly what it was before the call, byte for byte -- and the sheet it answers is empty, so a route
+// that serves it anyway serves nothing harmful.
+//
+// **Its own program, with no bare import**, which is the whole of the condition under test.
+
+@test
+THE_SHEET_IS_EMPTY_AND_STILL_HAS_AN_ADDRESS()
+    val sheet = serveAppSheet()
+
+    assertEq(sheet.css, "")
+    assertEq(sheet.hash, base64urlEncode(sha256("")[0..<9]))
+    assertEq(sheet.path, "/assets/app." + sheet.hash + ".css")
+
+@test
+A_FRAGMENT_IS_UNCHANGED_BYTE_FOR_BYTE()
+    serveAppSheet()
+
+    Card(props: object) =
+        style(card)
+
+        <div class="card">c</div>
+
+    Plain(props: object) = <p>plain</p>
+
+    assertEq(html(mount(<Card/>)), "<style data-lath-style>" + card + "</style><div class=\"card\">c</div>")
+    assertEq(html(mount(<Plain/>)), "<p>plain</p>")
+
+@test
+A_DOCUMENT_IS_UNCHANGED_BYTE_FOR_BYTE()
+    serveAppSheet()
+
+    Doc(props: object) = <html><head><title>t</title></head><body>b</body></html>
+
+    assertEq(html(mount(<Doc/>)), "<html><head><title>t</title></head><body>b</body></html>")

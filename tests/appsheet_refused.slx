@@ -1,0 +1,42 @@
+import "./app.css"
+import "./remote.css"
+import { createElement, mount, html, appSheet, serveAppSheet } from "../lath.slx"
+import app from "./app.css"
+import remote from "./remote.css"
+
+// A bare sheet in second place that opens with an `@import`, which one joined file cannot keep: a
+// browser honours an `@import` only ahead of every rule in its file, so after `app.css` it would be
+// dropped without a word and the page would lose a stylesheet.
+//
+// **Its own program**, the bare sheets being the whole program's.
+
+tag(css: string) -> string = "<style data-lath-style>" + css + "</style>"
+
+val Said = "the bare stylesheets are served as one file, and the one at position 1 in `sheets()` starts with an `@import`, which a browser ignores after another sheet's rules -- move that `@import` into the first sheet the program imports"
+
+refusal(f: function) -> string =
+    try
+        f()
+    catch e
+        return e.message
+
+    "nothing was refused"
+
+@test
+SERVING_IT_IS_REFUSED_NAMING_THE_SHEET_AND_THE_REMEDY()
+    assertEq(refusal(() -> serveAppSheet()), Said)
+
+@test
+ASKING_FOR_IT_IS_REFUSED_THE_SAME_WAY()
+    assertEq(refusal(() -> appSheet()), Said)
+
+@test
+A_REFUSED_APP_SHEET_LEAVES_THE_PAGE_AS_IT_WAS()
+    // The refusal is a fault at the call, so the `<link>` was never turned on and the separate
+    // `<style>` elements -- where the `@import` is at the top of its own and works -- are still
+    // what a page gets.
+    refusal(() -> serveAppSheet())
+
+    Plain(props: object) = <p>plain</p>
+
+    assertEq(html(mount(<Plain/>)), tag(app) + tag(remote) + "<p>plain</p>")

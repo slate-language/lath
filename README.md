@@ -59,6 +59,7 @@ the line that is wrong is the one in your own program.
 | `stringHost()` | the default host |
 | `domHost(selector)` | the other one, in `lath/dom` — a real page |
 | `style(css)` | a component's stylesheet, registered once for the page |
+| `appSheet()`, `serveAppSheet()` | the bare-imported sheets as one cacheable file, and the switch that links it |
 | `router(routes, at)`, `Link` | one URL, one view, in `lath/router` |
 | `router(routes)` | the same, nested — it matches what the route above it left |
 | `useRoute()` | the route the caller is standing in, in `lath/router` |
@@ -181,6 +182,60 @@ fault says so rather than complaining about a string three lines later. And a sh
 made — which is the one string that could end the element it is written in: the css is written
 raw, because a `>` in a child selector and an `&` in a `content:` string are ordinary css and both
 would break if the text were escaped.
+
+### Serving the bare sheets as one cached file
+
+**An app's global css is the same on every page, so a server can send it once and have the browser
+keep it.** `serveAppSheet()` answers the bare sheets as one file, and from then on every page the
+server writes carries a `<link>` to that file where their `<style>` elements stood. With
+[sluice](https://github.com/slate-language/sluice) the glue is two lines, beside the other routes:
+
+```
+import { serveAppSheet } from lath
+import { asset } from sluice
+
+val sheet = serveAppSheet()
+app.get(sheet.path, asset(sheet.css, sheet.type))
+```
+
+```
+html(mount(<Card>hi</Card>))
+// <link rel="stylesheet" href="/assets/app.GDQ0cyqJKXBl.css" data-lath-style><style data-lath-style>…card.css…</style><div class="card">hi</div>
+```
+
+| | |
+|---|---|
+| `sheet.css` | the bare sheets in `sheets()` order, joined by a newline |
+| `sheet.hash` | twelve base64url characters of the text's SHA-256 |
+| `sheet.path` | `/assets/app.<hash>.css` |
+| `sheet.type` | `text/css; charset=utf-8` |
+
+**The address names the text**, so a changed sheet is a new address and the old file can be cached
+for a year without anything going stale — which is what `asset` tells the browser
+(`Cache-Control: public, max-age=31536000, immutable`, a weak `ETag`, `304` for a client that sends
+it back; compression is `slate:http`'s). `appSheet()` answers the same object without turning
+anything on.
+
+**It is opt-in, and calling `serveAppSheet` is the opt-in.** A program that never calls it renders
+exactly as it always has, so an app that has not added the route cannot be sent a `<link>` to a file
+nobody serves. Once called it stays on for the program. A program with no bare sheets gets no
+`<link>` — its pages are unchanged byte for byte — and `sheet.css` is `""`, so the route is harmless.
+
+**The cascade is unchanged**: the `<link>` stands where the first bare `<style>` stood, ahead of
+every `style(css)` sheet, at the end of the head or in front of a fragment exactly as they were.
+
+**A hydrating page makes no mutations.** The bundle `slate js` builds has the same `sheets()` text,
+so the page works out the same address, recognises the `<link>` as the bare sheets and writes
+nothing; a `<link>` to any other address — a server still serving an older sheet — counts as none,
+and the page writes the bare sheets in itself. `slate dev`'s stylesheet swap re-points the `<link>`
+like any other, so a saved `.css` file still lands without a reload.
+
+**Two things differ from inline `<style>`, both about addresses.** A relative `url(…)` in the css
+resolves against `/assets/` rather than against the page, so an image or a font a bare sheet names
+relatively wants a root path (`/fonts/x.woff2`). And an `@import` slate did not inline — an
+absolute one — must be in the FIRST sheet the program imports: a browser honours `@import` only
+ahead of every rule in its file, so `serveAppSheet` refuses one opening any later sheet rather than
+let it be dropped without a word.
 
 ## The router
 
